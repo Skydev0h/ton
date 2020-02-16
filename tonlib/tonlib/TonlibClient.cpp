@@ -54,6 +54,8 @@
 #include "td/utils/tests.h"
 #include "td/utils/port/path.h"
 
+#include "common/util.h"
+
 namespace tonlib {
 namespace int_api {
 struct GetAccountState {
@@ -351,6 +353,10 @@ class AccountState {
     return raw_.info.gen_utime;
   }
 
+  ton::BlockIdExt get_block_id() const {
+    return raw_.block_id;
+  }
+
   td::int64 get_balance() const {
     return raw_.balance;
   }
@@ -380,6 +386,15 @@ class AccountState {
           {ton::HighloadWalletV2::get_init_code(wallet_revision_), ton::WalletV3::get_init_data(key, wallet_id_)});
       return wallet_type_;
     }
+    o_revision = ton::ManualDns::guess_revision(address_, key, wallet_id_);
+    if (o_revision) {
+      wallet_type_ = WalletType::ManualDns;
+      wallet_revision_ = o_revision.value();
+      LOG(ERROR) << "!!!" << wallet_revision_;
+      auto dns = ton::ManualDns::create(key, wallet_id_, wallet_revision_);
+      set_new_state(dns->get_state());
+      return wallet_type_;
+    }
     if (ton::GenericAccount::get_address(address_.workchain, ton::TestWallet::get_init_state(key)).addr ==
         address_.addr) {
       set_new_state({ton::TestWallet::get_init_code(), ton::TestWallet::get_init_data(key)});
@@ -393,12 +408,6 @@ class AccountState {
                    .addr == address_.addr) {
       set_new_state({ton::HighloadWallet::get_init_code(), ton::HighloadWallet::get_init_data(key, wallet_id_)});
       wallet_type_ = WalletType::HighloadWalletV1;
-    } else {
-      auto dns = ton::ManualDns::create(key, wallet_id_);
-      if (dns->get_address().addr == address_.addr) {
-        set_new_state(dns->get_state());
-        wallet_type_ = WalletType::ManualDns;
-      }
     }
     return wallet_type_;
   }
@@ -460,6 +469,12 @@ class AccountState {
       wallet_revision_ = o_revision.value();
       return wallet_type_;
     }
+    o_revision = ton::ManualDns::guess_revision(code_hash);
+    if (o_revision) {
+      wallet_type_ = WalletType::ManualDns;
+      wallet_revision_ = o_revision.value();
+      return wallet_type_;
+    }
 
     if (code_hash == ton::TestGiver::get_init_code_hash()) {
       wallet_type_ = WalletType::Giver;
@@ -469,8 +484,6 @@ class AccountState {
       wallet_type_ = WalletType::Wallet;
     } else if (code_hash == ton::HighloadWallet::get_init_code_hash()) {
       wallet_type_ = WalletType::HighloadWalletV1;
-    } else if (code_hash == ton::SmartContractCode::dns_manual()->get_hash()) {
-      wallet_type_ = WalletType::ManualDns;
     } else {
       LOG(WARNING) << "Unknown code hash: " << td::base64_encode(code_hash.as_slice());
       wallet_type_ = WalletType::Unknown;
@@ -1302,11 +1315,17 @@ td::Result<block::StdAddress> get_account_address(const tonlib_api::dns_initialA
                                                   td::int32 revision) {
   TRY_RESULT(key_bytes, get_public_key(dns_state.public_key_));
   auto key = td::Ed25519::PublicKey(td::SecureString(key_bytes.key));
-  return ton::ManualDns::create(key, static_cast<td::uint32>(dns_state.wallet_id_))->get_address();
+  return ton::ManualDns::create(key, static_cast<td::uint32>(dns_state.wallet_id_), revision)->get_address();
 }
 
 td::Result<block::StdAddress> get_account_address(td::Slice account_address) {
   TRY_RESULT_PREFIX(address, block::StdAddress::parse(account_address), TonlibError::InvalidAccountAddress());
+  return address;
+}
+
+td::Result<td::Bits256> get_adnl_address(td::Slice adnl_address) {
+  TRY_RESULT_PREFIX(address, td::adnl_id_decode(adnl_address),
+                    TonlibError::InvalidField("adnl_address", "can't decode"));
   return address;
 }
 
@@ -1609,6 +1628,7 @@ struct ToRawTransactions {
         }
         auto body_hash = vm::CellBuilder().append_cellslice(*body).finalize()->get_hash().as_slice().str();
         std::string body_message;
+        bool is_encrypted = false;
         if (body->size() >= 32 && body->prefetch_long(32) <= 1) {
           auto type = body.write().fetch_long(32);
           auto r_body_message = vm::CellString::load(body.write());
@@ -1619,7 +1639,8 @@ struct ToRawTransactions {
               if (!private_key_) {
                 return TonlibError::EmptyField("private_key");
               }
-              TRY_RESULT(decrypted, SimpleEncryption::decrypt_data(message, private_key_.value()));
+              TRY_RESULT(decrypted, SimpleEncryptionV2::decrypt_data(message, private_key_.value()));
+              is_encrypted = true;
               return decrypted.as_slice().str();
             }();
           }
@@ -1632,7 +1653,7 @@ struct ToRawTransactions {
 
         return tonlib_api::make_object<tonlib_api::raw_message>(std::move(src), std::move(dest), balance, fwd_fee,
                                                                 ihr_fee, created_lt, std::move(body_hash),
-                                                                std::move(body_message));
+                                                                std::move(body_message), is_encrypted);
       }
       case block::gen::CommonMsgInfo::ext_in_msg_info: {
         block::gen::CommonMsgInfo::Record_ext_in_msg_info msg_info;
@@ -1649,7 +1670,7 @@ struct ToRawTransactions {
         }
         auto body_hash = vm::CellBuilder().append_cellslice(*body).finalize()->get_hash().as_slice().str();
         return tonlib_api::make_object<tonlib_api::raw_message>("", std::move(dest), 0, 0, 0, 0, std::move(body_hash),
-                                                                "");
+                                                                "", false);
       }
       case block::gen::CommonMsgInfo::ext_out_msg_info: {
         block::gen::CommonMsgInfo::Record_ext_out_msg_info msg_info;
@@ -1657,7 +1678,7 @@ struct ToRawTransactions {
           return td::Status::Error("Failed to unpack CommonMsgInfo::ext_out_msg_info");
         }
         TRY_RESULT(src, to_std_address(msg_info.src));
-        return tonlib_api::make_object<tonlib_api::raw_message>(std::move(src), "", 0, 0, 0, 0, "", "");
+        return tonlib_api::make_object<tonlib_api::raw_message>(std::move(src), "", 0, 0, 0, 0, "", "", false);
       }
     }
 
@@ -1859,6 +1880,36 @@ td::Status TonlibClient::do_request(const tonlib_api::getAccountState& request,
   return td::Status::OK();
 }
 
+td::Result<ton::ManualDns::EntryData> to_dns_entry_data(tonlib_api::dns_EntryData& entry_data) {
+  using R = td::Result<ton::ManualDns::EntryData>;
+  return downcast_call2<R>(
+      entry_data,
+      td::overloaded(
+          [&](tonlib_api::dns_entryDataUnknown& unknown) -> R { return ton::ManualDns::EntryData(); },
+          [&](tonlib_api::dns_entryDataNextResolver& next_resolver) -> R {
+            if (!next_resolver.resolver_) {
+              return TonlibError::EmptyField("resolver");
+            }
+            TRY_RESULT(resolver, get_account_address(next_resolver.resolver_->account_address_));
+            return ton::ManualDns::EntryData::next_resolver(std::move(resolver));
+          },
+          [&](tonlib_api::dns_entryDataSmcAddress& smc_address) -> R {
+            if (!smc_address.smc_address_) {
+              return TonlibError::EmptyField("smc_address");
+            }
+            TRY_RESULT(address, get_account_address(smc_address.smc_address_->account_address_));
+            return ton::ManualDns::EntryData::smc_address(std::move(address));
+          },
+          [&](tonlib_api::dns_entryDataAdnlAddress& adnl_address) -> R {
+            if (!adnl_address.adnl_address_) {
+              return TonlibError::EmptyField("adnl_address");
+            }
+            TRY_RESULT(address, get_adnl_address(adnl_address.adnl_address_->adnl_address_));
+            return ton::ManualDns::EntryData::adnl_address(std::move(address));
+          },
+          [&](tonlib_api::dns_entryDataText& text) -> R { return ton::ManualDns::EntryData::text(text.text_); }));
+}
+
 class GenericCreateSendGrams : public TonlibQueryActor {
  public:
   GenericCreateSendGrams(td::actor::ActorShared<TonlibClient> client, tonlib_api::createQuery query,
@@ -1945,29 +1996,6 @@ class GenericCreateSendGrams : public TonlibQueryActor {
                                                        }));
     TRY_STATUS(std::move(status));
     return res;
-  }
-
-  td::Result<ton::ManualDns::EntryData> to_dns_entry_data(tonlib_api::dns_EntryData& entry_data) {
-    using R = td::Result<ton::ManualDns::EntryData>;
-    return downcast_call2<R>(
-        entry_data,
-        td::overloaded(
-            [&](tonlib_api::dns_entryDataUnknown& unknown) -> R { return ton::ManualDns::EntryData(); },
-            [&](tonlib_api::dns_entryDataNextResolver& next_resolver) -> R {
-              if (!next_resolver.resolver_) {
-                return TonlibError::EmptyField("resolver");
-              }
-              TRY_RESULT(resolver, get_account_address(next_resolver.resolver_->account_address_));
-              return ton::ManualDns::EntryData::next_resolver(std::move(resolver));
-            },
-            [&](tonlib_api::dns_entryDataSmcAddress& smc_address) -> R {
-              if (!smc_address.smc_address_) {
-                return TonlibError::EmptyField("smc_address");
-              }
-              TRY_RESULT(address, get_account_address(smc_address.smc_address_->account_address_));
-              return ton::ManualDns::EntryData::smc_address(std::move(address));
-            },
-            [&](tonlib_api::dns_entryDataText& text) -> R { return ton::ManualDns::EntryData::text(text.text_); }));
   }
 
   td::Result<ton::ManualDns::Action> to_dns_action(tonlib_api::dns_Action& action) {
@@ -2188,13 +2216,13 @@ class GenericCreateSendGrams : public TonlibQueryActor {
           return TonlibError::EmptyField("private_key");
         }
         if (!destination->is_wallet()) {
-          return TonlibError::AccountActionUnsupported("Get public key (in destination)");
+          return TonlibError::MessageEncryption("Get public key (in destination)");
         }
         auto wallet = destination->get_wallet();
         TRY_RESULT_PREFIX(public_key, wallet->get_public_key(),
                           TonlibError::AccountActionUnsupported("Get public key (in destination)"));
         TRY_RESULT_PREFIX(encrypted_message,
-                          SimpleEncryption::encrypt_data(action.message, public_key, private_key_.value()),
+                          SimpleEncryptionV2::encrypt_data(action.message, public_key, private_key_.value()),
                           TonlibError::Internal());
         gift.message = encrypted_message.as_slice().str();
         gift.is_encrypted = true;
@@ -2566,7 +2594,11 @@ td::Result<tonlib_api::object_ptr<tonlib_api::dns_EntryData>> to_tonlib_api(
         res = tonlib_api::make_object<tonlib_api::dns_entryDataNextResolver>(
             tonlib_api::make_object<tonlib_api::accountAddress>(resolver.resolver.rserialize(true)));
       },
-      [&](const ton::ManualDns::EntryDataAdnlAddress& adnl_address) { res = td::Status::Error("TODO"); },
+      [&](const ton::ManualDns::EntryDataAdnlAddress& adnl_address) {
+        res = tonlib_api::make_object<tonlib_api::dns_entryDataAdnlAddress>(
+            tonlib_api::make_object<tonlib_api::adnlAddress>(
+                td::adnl_id_encode(adnl_address.adnl_address.as_slice()).move_as_ok()));
+      },
       [&](const ton::ManualDns::EntryDataSmcAddress& smc_address) {
         res = tonlib_api::make_object<tonlib_api::dns_entryDataSmcAddress>(
             tonlib_api::make_object<tonlib_api::accountAddress>(smc_address.smc_address.rserialize(true)));
@@ -2574,13 +2606,21 @@ td::Result<tonlib_api::object_ptr<tonlib_api::dns_EntryData>> to_tonlib_api(
   return res;
 }
 
-void TonlibClient::finish_dns_resolve(std::string name, td::int32 category, td::unique_ptr<AccountState> smc,
+void TonlibClient::finish_dns_resolve(std::string name, td::int32 category, td::int32 ttl,
+                                      td::optional<ton::BlockIdExt> block_id, td::unique_ptr<AccountState> smc,
                                       td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise) {
   if (smc->get_wallet_type() != AccountState::WalletType::ManualDns) {
     return promise.set_error(TonlibError::AccountTypeUnexpected("ManualDns"));
   }
+  block_id = smc->get_block_id();
   auto dns = ton::ManualDns::create(smc->get_smc_state());
   TRY_RESULT_PROMISE(promise, entries, dns->resolve(name, category));
+
+  if (entries.size() == 1 && entries[0].category == -1 && entries[0].name != name && ttl > 0 &&
+      entries[0].data.type == ton::ManualDns::EntryData::Type::NextResolver) {
+    auto address = entries[0].data.data.get<ton::ManualDns::EntryDataNextResolver>().resolver;
+    return do_dns_request(name, category, ttl - 1, std::move(block_id), address, std::move(promise));
+  }
 
   std::vector<tonlib_api::object_ptr<tonlib_api::dns_entry>> api_entries;
   for (auto& entry : entries) {
@@ -2591,21 +2631,27 @@ void TonlibClient::finish_dns_resolve(std::string name, td::int32 category, td::
   promise.set_value(tonlib_api::make_object<tonlib_api::dns_resolved>(std::move(api_entries)));
 }
 
-void TonlibClient::do_dns_request(std::string name, td::int32 category, block::StdAddress address,
+void TonlibClient::do_dns_request(std::string name, td::int32 category, td::int32 ttl,
+                                  td::optional<ton::BlockIdExt> block_id, block::StdAddress address,
                                   td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise) {
-  make_request(int_api::GetAccountState{address, query_context_.block_id.copy()},
-               promise.send_closure(actor_id(this), &TonlibClient::finish_dns_resolve, name, category));
+  auto block_id_copy = block_id.copy();
+  make_request(int_api::GetAccountState{address, std::move(block_id_copy)},
+               promise.send_closure(actor_id(this), &TonlibClient::finish_dns_resolve, name, category, ttl,
+                                    std::move(block_id)));
 }
 
 td::Status TonlibClient::do_request(const tonlib_api::dns_resolve& request,
                                     td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise) {
+  auto block_id = query_context_.block_id.copy();
   if (!request.account_address_) {
     make_request(int_api::GetDnsResolver{},
-                 promise.send_closure(actor_id(this), &TonlibClient::do_dns_request, request.name_, request.category_));
+                 promise.send_closure(actor_id(this), &TonlibClient::do_dns_request, request.name_, request.category_,
+                                      request.ttl_, std::move(block_id)));
     return td::Status::OK();
   }
   TRY_RESULT(account_address, get_account_address(request.account_address_->account_address_));
-  do_dns_request(request.name_, request.category_, account_address, std::move(promise));
+  do_dns_request(request.name_, request.category_, request.ttl_, std::move(block_id), account_address,
+                 std::move(promise));
   return td::Status::OK();
 }
 
@@ -2722,6 +2768,28 @@ td::Status TonlibClient::do_request(const tonlib_api::importEncryptedKey& reques
   TRY_RESULT(key, key_storage_.import_encrypted_key(
                       std::move(request.local_password_), std::move(request.key_password_),
                       KeyStorage::ExportedEncryptedKey{std::move(request.exported_encrypted_key_->data_)}));
+  TRY_RESULT(key_bytes, public_key_from_bytes(key.public_key.as_slice()));
+  promise.set_value(tonlib_api::make_object<tonlib_api::key>(key_bytes.serialize(true), std::move(key.secret)));
+  return td::Status::OK();
+}
+td::Status TonlibClient::do_request(const tonlib_api::exportUnencryptedKey& request,
+                                    td::Promise<object_ptr<tonlib_api::exportedUnencryptedKey>>&& promise) {
+  if (!request.input_key_) {
+    return TonlibError::EmptyField("input_key");
+  }
+  TRY_RESULT(input_key, from_tonlib(*request.input_key_));
+  TRY_RESULT(exported_key, key_storage_.export_unencrypted_key(std::move(input_key)));
+  promise.set_value(tonlib_api::make_object<tonlib_api::exportedUnencryptedKey>(std::move(exported_key.data)));
+  return td::Status::OK();
+}
+td::Status TonlibClient::do_request(const tonlib_api::importUnencryptedKey& request,
+                                    td::Promise<object_ptr<tonlib_api::key>>&& promise) {
+  if (!request.exported_unencrypted_key_) {
+    return TonlibError::EmptyField("exported_encrypted_key");
+  }
+  TRY_RESULT(key, key_storage_.import_unencrypted_key(
+                      std::move(request.local_password_),
+                      KeyStorage::ExportedUnencryptedKey{std::move(request.exported_unencrypted_key_->data_)}));
   TRY_RESULT(key_bytes, public_key_from_bytes(key.public_key.as_slice()));
   promise.set_value(tonlib_api::make_object<tonlib_api::key>(key_bytes.serialize(true), std::move(key.secret)));
   return td::Status::OK();

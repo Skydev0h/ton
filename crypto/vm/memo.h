@@ -14,21 +14,24 @@
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
 
-    Copyright 2017-2020 Telegram Systems LLP
+    Copyright 2020 Telegram Systems LLP
 */
+#pragma once
+#include "common/refcnt.hpp"
 #include "vm/cells.h"
+#include "vm/vmstate.h"
 
-namespace ton {
-class SmartContractCode {
+namespace vm {
+using td::Ref;
+
+class FakeVmStateLimits : public VmStateInterface {
+  long long ops_remaining;
+  bool quiet;
+
  public:
-  static td::Result<td::Ref<vm::Cell>> load(td::Slice name);
-  static td::Ref<vm::Cell> multisig();
-  static td::Ref<vm::Cell> wallet3(int revision = 0);
-  static td::Ref<vm::Cell> wallet(int revision = 0);
-  static td::Ref<vm::Cell> simple_wallet(int revision = 0);
-  static td::Ref<vm::Cell> simple_wallet_ext();
-  static td::Ref<vm::Cell> highload_wallet(int revision = 0);
-  static td::Ref<vm::Cell> highload_wallet_v2(int revision = 0);
-  static td::Ref<vm::Cell> dns_manual(int revision = 0);
+  FakeVmStateLimits(long long max_ops = 1LL << 62, bool _quiet = true) : ops_remaining(max_ops), quiet(_quiet) {
+  }
+  bool register_op(int op_units = 1) override;
 };
-}  // namespace ton
+
+}  // namespace vm

@@ -143,10 +143,9 @@ TEST(Tonlib, InitClose) {
 )abc";
 
     sync_send(client, make_object<tonlib_api::options_setConfig>(cfg(bad_config.str()))).ensure_error();
-    auto address =
-        sync_send(client,
-                  make_object<tonlib_api::getAccountAddress>(make_object<tonlib_api::testGiver_initialAccountState>(), 0))
-            .move_as_ok();
+    auto address = sync_send(client, make_object<tonlib_api::getAccountAddress>(
+                                         make_object<tonlib_api::testGiver_initialAccountState>(), 0))
+                       .move_as_ok();
     sync_send(client, make_object<tonlib_api::getAccountState>(std::move(address))).ensure_error();
     sync_send(client, make_object<tonlib_api::close>()).ensure();
     sync_send(client, make_object<tonlib_api::close>()).ensure_error();
@@ -155,29 +154,37 @@ TEST(Tonlib, InitClose) {
   }
 }
 
-TEST(Tonlib, SimpleEncryption) {
+template <class Encryption>
+void test_encryption() {
   std::string secret = "secret";
   {
     std::string data = "some private data";
     std::string wrong_secret = "wrong secret";
-    auto encrypted_data = SimpleEncryption::encrypt_data(data, secret);
+    auto encrypted_data = Encryption::encrypt_data(data, secret);
     LOG(ERROR) << encrypted_data.size();
-    auto decrypted_data = SimpleEncryption::decrypt_data(encrypted_data, secret).move_as_ok();
+    auto decrypted_data = Encryption::decrypt_data(encrypted_data, secret).move_as_ok();
     CHECK(data == decrypted_data);
-    SimpleEncryption::decrypt_data(encrypted_data, wrong_secret).ensure_error();
-    SimpleEncryption::decrypt_data("", secret).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(32, 'a'), secret).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(33, 'a'), secret).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(64, 'a'), secret).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(128, 'a'), secret).ensure_error();
+    Encryption::decrypt_data(encrypted_data, wrong_secret).ensure_error();
+    Encryption::decrypt_data("", secret).ensure_error();
+    Encryption::decrypt_data(std::string(32, 'a'), secret).ensure_error();
+    Encryption::decrypt_data(std::string(33, 'a'), secret).ensure_error();
+    Encryption::decrypt_data(std::string(64, 'a'), secret).ensure_error();
+    Encryption::decrypt_data(std::string(128, 'a'), secret).ensure_error();
   }
 
   for (size_t i = 0; i < 255; i++) {
     auto data = td::rand_string('a', 'z', static_cast<int>(i));
-    auto encrypted_data = SimpleEncryption::encrypt_data(data, secret);
-    auto decrypted_data = SimpleEncryption::decrypt_data(encrypted_data, secret).move_as_ok();
+    auto encrypted_data = Encryption::encrypt_data(data, secret);
+    auto decrypted_data = Encryption::decrypt_data(encrypted_data, secret).move_as_ok();
     CHECK(data == decrypted_data);
   }
+}
+TEST(Tonlib, SimpleEncryption) {
+  test_encryption<SimpleEncryption>();
+}
+
+TEST(Tonlib, SimpleEncryptionV2) {
+  test_encryption<SimpleEncryptionV2>();
 }
 
 TEST(Tonlib, SimpleEncryptionAsym) {
@@ -188,26 +195,26 @@ TEST(Tonlib, SimpleEncryptionAsym) {
   auto wrong_private_key = td::Ed25519::generate_private_key().move_as_ok();
   {
     std::string data = "some private data";
-    auto encrypted_data = SimpleEncryption::encrypt_data(data, public_key, other_private_key).move_as_ok();
+    auto encrypted_data = SimpleEncryptionV2::encrypt_data(data, public_key, other_private_key).move_as_ok();
     LOG(ERROR) << encrypted_data.size();
-    auto decrypted_data = SimpleEncryption::decrypt_data(encrypted_data, private_key).move_as_ok();
+    auto decrypted_data = SimpleEncryptionV2::decrypt_data(encrypted_data, private_key).move_as_ok();
     CHECK(data == decrypted_data);
-    auto decrypted_data2 = SimpleEncryption::decrypt_data(encrypted_data, other_private_key).move_as_ok();
+    auto decrypted_data2 = SimpleEncryptionV2::decrypt_data(encrypted_data, other_private_key).move_as_ok();
     CHECK(data == decrypted_data2);
-    SimpleEncryption::decrypt_data(encrypted_data, wrong_private_key).ensure_error();
-    SimpleEncryption::decrypt_data("", private_key).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(32, 'a'), private_key).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(33, 'a'), private_key).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(64, 'a'), private_key).ensure_error();
-    SimpleEncryption::decrypt_data(std::string(128, 'a'), private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data(encrypted_data, wrong_private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data("", private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data(std::string(32, 'a'), private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data(std::string(33, 'a'), private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data(std::string(64, 'a'), private_key).ensure_error();
+    SimpleEncryptionV2::decrypt_data(std::string(128, 'a'), private_key).ensure_error();
   }
 
   for (size_t i = 0; i < 255; i++) {
     auto data = td::rand_string('a', 'z', static_cast<int>(i));
-    auto encrypted_data = SimpleEncryption::encrypt_data(data, public_key, other_private_key).move_as_ok();
-    auto decrypted_data = SimpleEncryption::decrypt_data(encrypted_data, private_key).move_as_ok();
+    auto encrypted_data = SimpleEncryptionV2::encrypt_data(data, public_key, other_private_key).move_as_ok();
+    auto decrypted_data = SimpleEncryptionV2::decrypt_data(encrypted_data, private_key).move_as_ok();
     CHECK(data == decrypted_data);
-    auto decrypted_data2 = SimpleEncryption::decrypt_data(encrypted_data, other_private_key).move_as_ok();
+    auto decrypted_data2 = SimpleEncryptionV2::decrypt_data(encrypted_data, other_private_key).move_as_ok();
     CHECK(data == decrypted_data2);
   }
 }
@@ -490,6 +497,21 @@ TEST(Tonlib, KeysApi) {
                               .move_as_ok();
   CHECK(new_imported_key->public_key_ == key->public_key_);
   CHECK(new_imported_key->secret_ != key->secret_);
+
+  auto exported_raw_key =
+      sync_send(client, make_object<tonlib_api::exportUnencryptedKey>(make_object<tonlib_api::inputKeyRegular>(
+                            make_object<tonlib_api::key>(key->public_key_, new_imported_key->secret_.copy()),
+                            new_local_password.copy())))
+          .move_as_ok();
+  sync_send(client, make_object<tonlib_api::deleteKey>(
+                        make_object<tonlib_api::key>(new_imported_key->public_key_, new_imported_key->secret_.copy())))
+      .move_as_ok();
+  auto raw_imported_key = sync_send(client, make_object<tonlib_api::importUnencryptedKey>(new_local_password.copy(),
+                                                                                          std::move(exported_raw_key)))
+                              .move_as_ok();
+
+  CHECK(raw_imported_key->public_key_ == key->public_key_);
+  CHECK(raw_imported_key->secret_ != key->secret_);
 }
 
 TEST(Tonlib, ConfigCache) {

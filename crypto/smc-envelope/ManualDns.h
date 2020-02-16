@@ -82,21 +82,7 @@ class DnsInterface {
     bool operator==(const EntryData& other) const {
       return data == other.data;
     }
-    friend td::StringBuilder& operator<<(td::StringBuilder& sb, const EntryData& data) {
-      switch (data.type) {
-        case Type::Empty:
-          return sb << "<empty>";
-        case Type::Text:
-          return sb << "text{" << data.data.get<EntryDataText>().text << "}";
-        case Type::NextResolver:
-          return sb << "next{" << data.data.get<EntryDataNextResolver>().resolver.rserialize() << "}";
-        case Type::AdnlAddress:
-          return sb << "adnl{" << data.data.get<EntryDataAdnlAddress>().adnl_address.to_hex() << "}";
-        case Type::SmcAddress:
-          return sb << "smc{" << data.data.get<EntryDataSmcAddress>().smc_address.rserialize() << "}";
-      }
-      return sb << "<unknown>";
-    }
+    friend td::StringBuilder& operator<<(td::StringBuilder& sb, const EntryData& data);
 
     td::Result<td::Ref<vm::Cell>> as_cell() const;
     static td::Result<EntryData> from_cellslice(vm::CellSlice& cs);
@@ -194,13 +180,17 @@ class ManualDns : public ton::SmartContract, public DnsInterface {
   static td::Ref<ManualDns> create(State state) {
     return td::Ref<ManualDns>(true, std::move(state));
   }
-  static td::Ref<ManualDns> create(td::Ref<vm::Cell> data = {});
-  static td::Ref<ManualDns> create(const td::Ed25519::PublicKey& public_key, td::uint32 wallet_id);
+  static td::Ref<ManualDns> create(td::Ref<vm::Cell> data = {}, int revision = 0);
+  static td::Ref<ManualDns> create(const td::Ed25519::PublicKey& public_key, td::uint32 wallet_id, int revision = 0);
 
   static std::string serialize_data(const EntryData& data);
   static td::Result<td::optional<ManualDns::EntryData>> parse_data(td::Slice cmd);
   static td::Result<ManualDns::ActionExt> parse_line(td::Slice cmd);
   static td::Result<std::vector<ManualDns::ActionExt>> parse(td::Slice cmd);
+
+  static td::optional<td::int32> guess_revision(const vm::Cell::Hash& code_hash);
+  static td::optional<td::int32> guess_revision(const block::StdAddress& address,
+                                                const td::Ed25519::PublicKey& public_key, td::uint32 wallet_id);
 
   td::Ref<vm::Cell> create_init_data(const td::Ed25519::PublicKey& public_key, td::uint32 valid_until) const {
     return create_init_data_fast(public_key, valid_until);

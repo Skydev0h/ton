@@ -165,6 +165,8 @@ x{68} @Defop DEPTH
 x{69} @Defop CHKDEPTH
 x{6A} @Defop ONLYTOPX
 x{6B} @Defop ONLYX
+{ over 0= abort"first argument must be non-zero"
+  <b x{6C} s, rot 4 u, swap 4 u, @addopb } : BLKDROP2
 
 // null primitives
 x{6D} dup @Defop NULL @Defop PUSHNULL
@@ -216,6 +218,10 @@ x{6FA0} @Defop NULLSWAPIF
 x{6FA1} @Defop NULLSWAPIFNOT
 x{6FA2} @Defop NULLROTRIF
 x{6FA3} @Defop NULLROTRIFNOT
+x{6FA4} @Defop NULLSWAPIF2
+x{6FA5} @Defop NULLSWAPIFNOT2
+x{6FA6} @Defop NULLROTRIF2
+x{6FA7} @Defop NULLROTRIFNOT2
 { <b x{6FB} s, rot 2 u, swap 2 u, @addopb } : INDEX2
 x{6FB4} @Defop CADR
 x{6FB5} @Defop CDDR
@@ -305,7 +311,9 @@ x{A90C} @Defop DIVMOD
 x{A90D} @Defop DIVMODR
 x{A90E} @Defop DIVMODC
 x{A925} @Defop RSHIFTR
+x{A926} @Defop RSHIFTC
 x{A935} @Defop(8u+1) RSHIFTR#
+x{A936} @Defop(8u+1) RSHIFTC#
 x{A938} @Defop(8u+1) MODPOW2#
 x{A984} @Defop MULDIV
 x{A985} @Defop MULDIVR
@@ -1074,101 +1082,114 @@ x{FFF0} @Defop SETCPX
 variable @proccnt
 variable @proclist
 variable @procdict
+variable @procinfo
 variable @gvarcnt
-variable @usedproc
-variable @inlineproc
-variable @retainall
-variable @warnunused
-variable @warninlinemix
+variable asm-mode  1 asm-mode !
 19 constant @procdictkeylen
-{ @proclist @ cons @proclist ! } : @proclistadd
-{ dup @procdictkeylen fits not abort"procedure index out of range"
-  1 'nop does swap dup @proclistadd 0 (create)
+32 constant @zcount
+{ pair @proclist @ cons @proclist ! } : @proclistadd
+{ @procinfo @ @procdictkeylen idict@ { 16 i@ } { 0 } cond } : @procinfo@
+{ <b rot 16 i, swap @procinfo @ @procdictkeylen b>idict!
+  not abort"cannot add key to procedure info dictionary"
+  @procinfo !
+} : @procinfo!
+// ( x v1 v2 -- )
+{ not 2 pick @procinfo@ and xor swap @procinfo! } : @procinfo~!
+// ( s i f -- )
+{ over @procdictkeylen fits not abort"procedure index out of range"
+  over swap dup @procinfo~!  2dup @proclistadd
+  1 'nop does swap 0 (create)
 } : @declproc
-{ <b b> <s swap @usedproc @ @procdictkeylen idict! drop @usedproc ! } : @useproc
-{ <b b> <s swap @inlineproc @ @procdictkeylen idict! drop @inlineproc ! } : @inlproc
 { 1 'nop does swap 0 (create) } : @declglobvar
-{ @proccnt @ 1+ dup @proccnt ! @declproc } : @newproc
+{ @proccnt @ 1+ dup @proccnt ! 1 @declproc } : @newproc
 { @gvarcnt @ 1+ dup @gvarcnt ! @declglobvar } : @newglobvar
 { 0 =: main  @proclist null!  @proccnt 0!  @gvarcnt 0!
   { bl word @newproc } : NEWPROC
   { bl word dup (def?) ' drop ' @newproc cond } : DECLPROC
   { bl word dup find
     { nip execute <> abort"method redefined with different id" }
-    { swap dup @useproc @declproc }
+    { swap 17 @declproc }
   cond } : DECLMETHOD
   { bl word @newglobvar } : DECLGLOBVAR
-  "main" @proclistadd
-  dictnew dup dup @procdict ! @usedproc ! @inlineproc !
+  "main" 0 @proclistadd
+  dictnew dup @procdict !
+  @procinfo !  16 0 @procinfo!
 } : PROGRAM{
 { over sbits < { s>c <b swap ref, b> <s } if } : @adj-long-proc
 { // i s l
-  @adj-long-proc swap @procdict @ @procdictkeylen
+  @adj-long-proc over @procdict @ @procdictkeylen
   idict!+ not abort"cannot define procedure, redefined?"
-  @procdict !
+  @procdict !  2 2 @procinfo~!
 } : @def-proc
-{ dup @useproc CALL } dup : CALL : CALLDICT
-{ dup @useproc JMP } dup : JMP : JMPDICT
-{ dup @useproc PREPARE } dup : PREPARE : PREPAREDICT
+{ @procinfo @ null? not } : @have-procinfo?
+{ @have-procinfo? { 4 4 @procinfo~! } { drop } cond } : @proc-inlined
+{ @have-procinfo? { 8 8 @procinfo~! } { drop } cond } : @proc-called
 { 1000 @def-proc } : PROC
 { 0 @def-proc } : PROCREF
 { @procdict @ @procdictkeylen idict@ abort"procedure already defined"
 } : @fail-ifdef
+{ u@?+ { swap abort"first bits are not zeroes" } if } : @cut-zeroes
 { over @fail-ifdef
-  2 { rot @normal? rot b> <s swap @def-proc drop } does
-  null swap @doafter<{
+  2 { rot @normal? rot b> <s @zcount @cut-zeroes swap @def-proc drop } does
+  null swap @doafter<{ 0 @zcount u,
 } : @PROC:<{
 { 1000 @PROC:<{ } : PROC:<{
 { 0 @PROC:<{ } : PROCREF:<{
+{ dup @proc-called CALLDICT } dup : CALL : CALLDICT
+{ dup @proc-called JMPDICT } dup : JMP : JMPDICT
+{ dup @proc-called PREPAREDICT } dup : PREPARE : PREPAREDICT
 { dup @procdict @ @procdictkeylen idict@
-  { swap @inlproc INLINE } { CALLDICT } cond
+  { swap @proc-inlined INLINE } { CALLDICT } cond
 } dup : INLINECALL : INLINECALLDICT
 { 0 @procdict @ @procdictkeylen idict@ not abort"`main` procedure not defined" drop
 } : @chkmaindef
+{ @procdict @ @procdictkeylen idict- drop @procdict ! } : @remove-proc
+{ ."Procedure `" over type ."` index=" 2 pick . ." flags=0x" dup x. cr } : @showprocinfo
+// ( proc_name proc_idx f -- )  f:+1=declared, +2=defined, +4=inlined, +8=called, +16=method
+{ // @showprocinfo
+  dup 0x1a and 2 = asm-mode @ 3 and and ?dup {
+    2 and {
+      over ."Warning: removing (inlined) procedure `" type ."` from call dictionary" cr
+    } if
+    2 pick @remove-proc
+  } if  // remove unused procs
+  dup 0xc and 0xc = asm-mode @ 4 and and {
+    over ."Warning: inline procedure `" type ."` is not always inlined" cr
+  } if
+  dup 0x1e and 2 = asm-mode @ 8 and and {
+    over ."Warning: procedure `" type ."` defined but not used" cr
+  } if
+  drop 2drop
+} : @chkprocdef
 { @chkmaindef
   @proclist @ { dup null? not } {
-    uncons swap dup find not
-    { +": undefined procedure name in list" abort } if
-    execute dup @usedproc @ @procdictkeylen idict@ { drop @warninlinemix @ { 
-      @inlineproc @ @procdictkeylen { drop over = } dictforeach 
-	  { dup ."Warning: method #" . ."(" over type .") used both inline and not" cr } if } if }
-    { dup 0 > over @inlineproc @ @procdictkeylen idict@ dup { 2drop -1 } if not and
-      @warnunused @ and { dup ."Warning: unused method #" . ."(" over type .")" 
-        @retainall @ { ." removed" } ifnot cr } if 
-    } cond
-    @procdict @ @procdictkeylen idict@ not
-    { +": procedure declared but left undefined" abort } if 
-    drop (forget)
+    uncons swap unpair over find not
+    { drop +": undefined procedure name in list" abort } if
+    drop tuck @procdict @ @procdictkeylen idict@ not
+    { +": procedure declared but left undefined" abort } if
+    drop swap 2dup @procinfo@ @chkprocdef (forget)
   } while
-  dictnew drop @proclist null! @proccnt 0! @procdict dup @ swap null!
-  @procdictkeylen { swap 1 @procdictkeylen << 2/ over swap >= // < 0
-    dup { swap 1 @procdictkeylen << - swap } if // get actual signed index
-    over 0 = or // recv_internal, equals zero
-    over @usedproc @ @procdictkeylen idict@ dup { nip } if or // marked as used
-    @retainall @ or // keep all procs if explicitly asked for
-    { rot @procdictkeylen idict! drop } { 2drop } cond true 
-  } dictforeach drop
-  @usedproc null! @inlineproc null!
+  drop @proclist null! @procinfo null! @proccnt 0!
+  @procdict dup @ swap null!
 } : }END
 forget @proclist  forget @proccnt
 { }END <{ SETCP0 swap @procdictkeylen DICTPUSHCONST DICTIGETJMPZ 11 THROWARG }> } : }END>
 { }END> b> } : }END>c
 { }END>c <s } : }END>s
 
-false @retainall ! // do not remove unused procedures
-{ true @retainall ! } : asm-retain-all
-
-false @warnunused ! // warn about unused procedures
-{ true @warnunused ! } : asm-warn-unused
-
-false @warninlinemix ! // warn about procs called both as inline and calldict
-{ true @warninlinemix ! } : asm-warn-inline-mix
-
 0 constant recv_internal
 -1 constant recv_external
 -2 constant run_ticktock
 -3 constant split_prepare
 -4 constant split_install
+
+{ asm-mode 0 3 ~! } : asm-no-remove-unused
+{ asm-mode 1 1 ~! } : asm-remove-unused   // enabled by default
+{ asm-mode 3 3 ~! } : asm-warn-remove-unused
+{ asm-mode 4 4 ~! } : asm-warn-inline-mix
+{ asm-mode 0 4 ~! } : asm-no-warn-inline-mix  // disabled by default
+{ asm-mode 8 8 ~! } : asm-warn-unused
+{ asm-mode 0 8 ~! } : asm-no-warn-unused  // disabled by default
 
 // ( c -- )   add vm library for later use with runvmcode
 { <b over ref, b> <s swap hash vmlibs @ 256 udict! not abort"cannot add library" vmlibs ! } : add-lib

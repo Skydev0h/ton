@@ -16,19 +16,20 @@
 
     Copyright 2017-2020 Telegram Systems LLP
 */
-#include "vm/cells.h"
+
+#include "adnl-node-id.hpp"
+
+#include "common/util.h"
 
 namespace ton {
-class SmartContractCode {
- public:
-  static td::Result<td::Ref<vm::Cell>> load(td::Slice name);
-  static td::Ref<vm::Cell> multisig();
-  static td::Ref<vm::Cell> wallet3(int revision = 0);
-  static td::Ref<vm::Cell> wallet(int revision = 0);
-  static td::Ref<vm::Cell> simple_wallet(int revision = 0);
-  static td::Ref<vm::Cell> simple_wallet_ext();
-  static td::Ref<vm::Cell> highload_wallet(int revision = 0);
-  static td::Ref<vm::Cell> highload_wallet_v2(int revision = 0);
-  static td::Ref<vm::Cell> dns_manual(int revision = 0);
-};
+namespace adnl {
+td::Result<AdnlNodeIdShort> AdnlNodeIdShort::parse(td::Slice id) {
+  TRY_RESULT(str, td::adnl_id_decode(id));
+  return AdnlNodeIdShort(str);
+}
+
+std::string AdnlNodeIdShort::serialize() {
+  return adnl_id_encode(hash_.as_slice()).move_as_ok();
+}
+}  // namespace adnl
 }  // namespace ton

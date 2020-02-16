@@ -34,8 +34,11 @@ inputKeyFake = InputKey;
 exportedKey word_list:vector<secureString> = ExportedKey;
 exportedPemKey pem:secureString = ExportedPemKey;
 exportedEncryptedKey data:secureBytes = ExportedEncryptedKey;
+exportedUnencryptedKey data:secureBytes = ExportedUnencryptedKey;
 
 bip39Hints words:vector<string> = Bip39Hints;
+
+adnlAddress adnl_address:string = AdnlAddress;
 
 accountAddress account_address:string = AccountAddress;
 accountRevisionList revisions:vector<int32> = AccountRevisionList;
@@ -48,7 +51,7 @@ ton.blockId workchain:int32 shard:int64 seqno:int32 = internal.BlockId;
 ton.blockIdExt workchain:int32 shard:int64 seqno:int32 root_hash:bytes file_hash:bytes = ton.BlockIdExt;
 
 raw.fullAccountState balance:int64 code:bytes data:bytes last_transaction_id:internal.transactionId block_id:ton.blockIdExt frozen_hash:bytes sync_utime:int53 = raw.FullAccountState;
-raw.message source:string destination:string value:int64 fwd_fee:int64 ihr_fee:int64 created_lt:int64 body_hash:bytes message:bytes = raw.Message;
+raw.message source:string destination:string value:int64 fwd_fee:int64 ihr_fee:int64 created_lt:int64 body_hash:bytes message:bytes is_message_encrypted:Bool = raw.Message;
 raw.transaction utime:int53 data:bytes transaction_id:internal.transactionId fee:int64 storage_fee:int64 other_fee:int64 in_msg:raw.message out_msgs:vector<raw.message> = raw.Transaction;
 raw.transactions transactions:vector<raw.transaction> previous_transaction_id:internal.transactionId = raw.Transactions;
 
@@ -92,7 +95,7 @@ dns.entryDataUnknown bytes:bytes = dns.EntryData;
 dns.entryDataText text:string = dns.EntryData;
 dns.entryDataNextResolver resolver:AccountAddress = dns.EntryData;
 dns.entryDataSmcAddress smc_address:AccountAddress = dns.EntryData;
-//TODO: other entry types
+dns.entryDataAdnlAddress adnl_address:AdnlAddress = dns.EntryData;
 
 dns.entry name:string category:int32 entry:dns.EntryData = dns.Entry;
 
@@ -176,9 +179,11 @@ deleteAllKeys = Ok;
 exportKey input_key:InputKey = ExportedKey;
 exportPemKey input_key:InputKey key_password:secureBytes = ExportedPemKey;
 exportEncryptedKey input_key:InputKey key_password:secureBytes = ExportedEncryptedKey;
+exportUnencryptedKey input_key:InputKey = ExportedUnencryptedKey;
 importKey local_password:secureBytes mnemonic_password:secureBytes exported_key:exportedKey = Key;
 importPemKey local_password:secureBytes key_password:secureBytes exported_key:exportedPemKey = Key;
 importEncryptedKey local_password:secureBytes key_password:secureBytes exported_encrypted_key:exportedEncryptedKey = Key;
+importUnencryptedKey local_password:secureBytes  exported_unencrypted_key:exportedUnencryptedKey = Key;
 changeLocalPassword input_key:InputKey new_local_password:secureBytes = Key;
 
 encrypt decrypted_data:secureBytes secret:secureBytes = Data;
@@ -218,7 +223,7 @@ smc.getData id:int53 = tvm.Cell;
 smc.getState id:int53 = tvm.Cell;
 smc.runGetMethod id:int53 method:smc.MethodId stack:vector<tvm.StackEntry> = smc.RunResult;
 
-dns.resolve account_address:accountAddress name:string category:int32 = dns.Resolved;
+dns.resolve account_address:accountAddress name:string category:int32 ttl:int32 = dns.Resolved;
 
 onLiteServerQueryResult id:int64 bytes:bytes = Ok;
 onLiteServerQueryError id:int64 error:error = Ok;

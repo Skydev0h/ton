@@ -32,6 +32,8 @@
 #include "td/utils/CancellationToken.h"
 #include "td/utils/optional.h"
 
+#include "smc-envelope/ManualDns.h"
+
 #include <map>
 
 namespace tonlib {
@@ -46,6 +48,10 @@ inline std::string to_string(const int_api::SendMessage&) {
 }  // namespace int_api
 class AccountState;
 class Query;
+
+td::Result<tonlib_api::object_ptr<tonlib_api::dns_EntryData>> to_tonlib_api(
+    const ton::ManualDns::EntryData& entry_data);
+td::Result<ton::ManualDns::EntryData> to_dns_entry_data(tonlib_api::dns_EntryData& entry_data);
 
 class TonlibClient : public td::actor::Actor {
  public:
@@ -239,6 +245,11 @@ class TonlibClient : public td::actor::Actor {
   td::Status do_request(const tonlib_api::importEncryptedKey& request,
                         td::Promise<object_ptr<tonlib_api::key>>&& promise);
 
+  td::Status do_request(const tonlib_api::exportUnencryptedKey& request,
+                        td::Promise<object_ptr<tonlib_api::exportedUnencryptedKey>>&& promise);
+  td::Status do_request(const tonlib_api::importUnencryptedKey& request,
+                        td::Promise<object_ptr<tonlib_api::key>>&& promise);
+
   td::Status do_request(const tonlib_api::changeLocalPassword& request,
                         td::Promise<object_ptr<tonlib_api::key>>&& promise);
 
@@ -284,9 +295,10 @@ class TonlibClient : public td::actor::Actor {
 
   td::Status do_request(const tonlib_api::dns_resolve& request,
                         td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise);
-  void do_dns_request(std::string name, td::int32 category, block::StdAddress address,
-                      td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise);
-  void finish_dns_resolve(std::string name, td::int32 category, td::unique_ptr<AccountState> smc,
+  void do_dns_request(std::string name, td::int32 category, td::int32 ttl, td::optional<ton::BlockIdExt> block_id,
+                      block::StdAddress address, td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise);
+  void finish_dns_resolve(std::string name, td::int32 category, td::int32 ttl, td::optional<ton::BlockIdExt> block_id,
+                          td::unique_ptr<AccountState> smc,
                           td::Promise<object_ptr<tonlib_api::dns_resolved>>&& promise);
 
   td::Status do_request(int_api::GetAccountState request, td::Promise<td::unique_ptr<AccountState>>&&);
