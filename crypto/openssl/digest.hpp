@@ -26,6 +26,8 @@
 
 #include <openssl/sha.h>
 
+#include "contest/solution/sol-controls.h"
+
 namespace digest {
 struct OpensslEVP_SHA1 {
   enum { digest_bytes = 20 };
@@ -125,6 +127,7 @@ std::string HashCtx<H>::extract() {
   return std::string((char *)buffer, olen);
 }
 
+#ifdef OPENSSL_FAST_SHA256
 // sd: N.B.! While being deprecated, these functions are MUCH faster than EV ones!
 // see https://github.com/openssl/openssl/issues/19612
 // If performance is *really* needed, then it is better to use them, and profiling
@@ -169,6 +172,7 @@ public:
     return std::string((char *)buffer, digest_bytes);
   }
 };
+#endif
 
 typedef HashCtx<OpensslEVP_SHA1> SHA1;
 typedef HashCtx<OpensslEVP_SHA256> SHA256;

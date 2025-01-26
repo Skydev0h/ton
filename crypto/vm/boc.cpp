@@ -34,6 +34,7 @@
 #include "td/utils/Slice-decl.h"
 
 #include <queue>
+#include <contest/solution/sol-controls.h>
 
 namespace vm {
 using td::Ref;
@@ -1032,15 +1033,6 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
     }
   }
 
-  // =====================================================================================================================
-  // Enable blast processing for Bag of Cells deserialization (comment for better CPU time... hopefully):
-  #define BOC_DS_BLAST_PROCESSING
-  // WTF: Using Actor Workers results in quite lower overall time, but significantly higher Total CPU time
-  // I hope it would be possible to submit both variants...
-  // #define BOC_DS_BP_USE_ACTORS
-  // N.B. It seems that need to disable it also for profiling, because it messes up profiler outputs
-  // =====================================================================================================================
-
   auto cells_slice = data.substr(info.data_offset, info.data_size);
 
 #ifdef BOC_DS_BLAST_PROCESSING
@@ -1078,12 +1070,13 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   // Do we have Actor Scheduler Context? We should.
   auto context = td::actor::SchedulerContext::get();
   if (context != nullptr && !context->scheduler_group()->schedulers.empty()) {
-    n_thr = context->scheduler_group()->schedulers.front().cpu_threads_count - 1;
+    n_thr = context->scheduler_group()->schedulers.front().cpu_threads_count - 1u;
   } else {
 #endif
-    n_thr = std::min(4u, n_thr);
+    n_thr = std::min(BOC_DS_BP_THR_NUM, n_thr);
 #ifdef BOC_DS_BP_USE_ACTORS
   }
+  n_thr = std::max(1u, n_thr);
 #endif
 #if METRICS_MEASURE == MM_BOC_BLAST_MT
   m::a1.fetch_add(cell_count);

@@ -26,6 +26,7 @@
 #include "vm/cells/CellWithStorage.h"
 
 #include <thread>
+#include "contest/solution/sol-controls.h"
 
 namespace vm {
 thread_local bool DataCell::use_arena = false;
@@ -58,6 +59,7 @@ private:
   }
 };
 
+#ifdef CELL_DATA_TEMP_ARENA
 // Can be used to allocate temporary arena which combines best of two worlds:
 //     fast allocation AND being able to delete the data later from memory (or reuse allocated memory slabs)
 // General logic is - Enable and Reset TempArena - Create and use cells - Disable TempArena
@@ -97,7 +99,7 @@ struct TemporaryArenaAllocator {
 
 private:
 
-  static constexpr size_t batch_size = 1 << 22; // 4 MB (for better locality)
+  static constexpr size_t batch_size = TEMP_ARENA_BATCH_SIZE;
   static std::list<char*> allocated_pool; // soft reset does not delete pool, hard reset does, slabs can be reused
   static std::list<char*>::iterator available;
   static std::mutex mutex;
@@ -149,9 +151,12 @@ std::mutex TemporaryArenaAllocator::mutex{};
 uint64_t TemporaryArenaAllocator::generation = 0;
 std::list<char*>::iterator TemporaryArenaAllocator::available = allocated_pool.end();
 }
+#endif
 
 void DataCell::reset_temp_arena(bool hard) {
+#ifdef CELL_DATA_TEMP_ARENA
   TemporaryArenaAllocator::reset(hard);
+#endif
 }
 
 std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
@@ -163,6 +168,7 @@ std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
     return res;
   }
 
+#ifdef CELL_DATA_TEMP_ARENA
   if (use_temp_arena)
   {
     TemporaryArenaAllocator allocator;
@@ -171,6 +177,7 @@ std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
     Ref<DataCell>(res.get()).release();
     return res;
   }
+#endif
 
   return detail::CellWithUniquePtrStorage<DataCell>::create(info.get_storage_size(), info);
 }
@@ -430,12 +437,21 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
 
 #undef append
 
+#ifdef DATA_CELL_DIRECT_SHA256
     static TD_THREAD_LOCAL digest::SHA256* hasher;
     td::init_thread_local<digest::SHA256>(hasher);
     hasher->reset();
     hasher->feed(tmp, end - tmp);
     const auto extracted_size = hasher->extract(hashes_ptr[dest_i].as_slice());
     DCHECK(extracted_size == hash_bytes);
+#else
+    static TD_THREAD_LOCAL digest::SHA256* hasher;
+    td::init_thread_local<digest::SHA256>(hasher);
+    hasher->reset();
+    hasher->feed(tmp, end - tmp);
+    auto extracted_size = hasher->extract(hashes_ptr[dest_i].as_slice());
+    DCHECK(extracted_size == hash_bytes);
+#endif
 
 #if METRICS_MEASURE == MM_CELL_HASH
     m::u2 += 1;

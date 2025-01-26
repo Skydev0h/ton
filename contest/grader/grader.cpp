@@ -22,6 +22,7 @@
 #include "vm/cells/MerkleUpdate.h"
 
 #include <sys/resource.h>
+#include "contest/solution/sol-controls.h"
 
 using namespace ton;
 
@@ -98,8 +99,10 @@ class ContestGrader : public td::actor::Actor {
     td::BufferSlice collated_data = std::move(test->collated_data_);
     bool valid = test->valid_;
 
+#ifdef CELL_DATA_TEMP_ARENA
     vm::DataCell::reset_temp_arena();
     vm::DataCell::use_temp_arena = true;
+#endif
 
     td::Ref<vm::Cell> original_merkle_update;
     auto S = [&]() -> td::Status {
@@ -162,7 +165,9 @@ class ContestGrader : public td::actor::Actor {
       fflush(stdout);
       ++cnt_fail_;
       ++test_idx_;
+#ifdef CELL_DATA_TEMP_ARENA
       vm::DataCell::use_temp_arena = false; // <- are these even needed here?
+#endif
       run_next_test();
       return;
     }
@@ -178,7 +183,9 @@ class ContestGrader : public td::actor::Actor {
       fflush(stdout);
       ++cnt_ok_;
       ++test_idx_;
+#ifdef CELL_DATA_TEMP_ARENA
       vm::DataCell::use_temp_arena = false;
+#endif
       run_next_test();
       return;
     }
@@ -189,7 +196,9 @@ class ContestGrader : public td::actor::Actor {
       fflush(stdout);
       ++cnt_fail_;
       ++test_idx_;
+#ifdef CELL_DATA_TEMP_ARENA
       vm::DataCell::use_temp_arena = false;
+#endif
       run_next_test();
       return;
     }
@@ -213,7 +222,9 @@ class ContestGrader : public td::actor::Actor {
     total_cpu_time_ += cpu_time;
     ++cnt_ok_;
     ++test_idx_;
+#ifdef CELL_DATA_TEMP_ARENA
     vm::DataCell::use_temp_arena = false;
+#endif
     run_next_test();
   }
 
