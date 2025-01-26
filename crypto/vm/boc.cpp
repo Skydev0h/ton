@@ -816,9 +816,9 @@ td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell(int idx, td::Slic
 }
 
 td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast_initial(
-  int idx, td::Slice cells_slice, td::Ref<DataCell> cells_span[],
+  int idx, td::Slice cells_slice, td::Span<td::Ref<DataCell>> cells_span,
   std::vector<td::uint8>* cell_should_cache, std::queue<DeferredCellData>& deferred_queue,
-  std::mutex cell_cache_mutexes[]) {
+  std::vector<std::mutex>& cell_cache_mutexes) {
   TRY_RESULT(cell_slice, get_cell_slice(idx, cells_slice));
   std::array<td::Ref<Cell>, 4> refs_buf;
 
@@ -864,7 +864,7 @@ td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast_initial(
 }
 
 td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast_deferred(
-  const DeferredCellData& cell, td::Ref<DataCell> cells_span[]) {
+  const DeferredCellData& cell, td::Span<td::Ref<DataCell>> cells_span) {
   std::array<td::Ref<Cell>, 4> refs_buf;
   auto refs = td::MutableSpan<td::Ref<Cell>>(refs_buf).substr(0, cell.info.refs_cnt);
 
@@ -1034,17 +1034,17 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   // =====================================================================================================================
   // Enable blast processing for Bag of Cells deserialization (comment for better CPU time... hopefully):
   #define BOC_DS_BLAST_PROCESSING
+  // N.B. It seems that need to disable it also for profiling, because it messes up profiler outputs
   // =====================================================================================================================
 
   auto cells_slice = data.substr(info.data_offset, info.data_size);
 
 #ifdef BOC_DS_BLAST_PROCESSING
-  Ref<DataCell> cell_list[cell_count];
-  std::mutex cell_cache_mutexes[info.has_cache_bits ? cell_count : 0];
+  std::vector<Ref<DataCell>> cell_list(cell_count);
+  std::vector<std::mutex> cell_cache_mutexes(info.has_cache_bits ? cell_count : 0);
 #else
   std::vector<Ref<DataCell>> cell_list;
   cell_list.reserve(cell_count);
-  std::array<td::Ref<Cell>, 4> refs_buf;
 #endif
   // ===================================================================================================================
   // sd: Need to properly order cell deserialization, so that it can be multithreaded. Profiler wouldn't lie!

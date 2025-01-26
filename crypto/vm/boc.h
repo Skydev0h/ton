@@ -394,12 +394,12 @@ class BagOfCells {
   td::Result<td::Ref<vm::DataCell>> deserialize_cell(int index, td::Slice data, td::Span<td::Ref<DataCell>> cells,
                                                      std::vector<td::uint8>* cell_should_cache);
   td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast_initial(int idx, td::Slice cells_slice,
-                                                                   td::Ref<DataCell> cells_span[],
+                                                                   td::Span<td::Ref<DataCell>> cells_span,
                                                                    std::vector<td::uint8>* cell_should_cache,
                                                                    std::queue<DeferredCellData>& deferred_queue,
-                                                                   std::mutex cell_cache_mutexes[]);
+                                                                   std::vector<std::mutex>& cell_cache_mutexes);
   td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast_deferred(const DeferredCellData& cell,
-                                                                    td::Ref<DataCell> cells_span[]);
+                                                                    td::Span<td::Ref<DataCell>> cells_span);
   /*
   // [Depth queues approach]
   td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast(const std::tuple<int, CellSerializationInfo, td::Slice>& args,
