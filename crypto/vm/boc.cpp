@@ -22,6 +22,7 @@
 #include "vm/boc.h"
 
 #include "metrics.h"
+#include "td/actor/actor.h"
 #include "td/actor/common.h"
 #include "vm/boc-writers.h"
 #include "vm/cells.h"
@@ -1034,6 +1035,9 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   // =====================================================================================================================
   // Enable blast processing for Bag of Cells deserialization (comment for better CPU time... hopefully):
   #define BOC_DS_BLAST_PROCESSING
+  // WTF: Using Actor Workers results in quite lower overall time, but significantly higher Total CPU time
+  // I hope it would be possible to submit both variants...
+  // #define BOC_DS_BP_USE_ACTORS
   // N.B. It seems that need to disable it also for profiling, because it messes up profiler outputs
   // =====================================================================================================================
 
@@ -1064,7 +1068,23 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   //    If refs are still missing, put cell back into the queue
   //    N.B.: No need to lock refs. There may be possible race condition that thread misses a ref, but that's OK.
   //    Burden from missing a cell should be less than synchronizing each and every access to cell list.
-  const unsigned n_thr = std::min(4u, td::thread::hardware_concurrency()); // currently, 4 seems to be the most optimal amount of threads
+
+  // Actors seem to be a bit broken or troublesome. Even when yielding in different ways, running more than 7 threads causes problems.
+  // Therefore, we create n-1 Worker Actors to do the job. Maybe do additional research on this later?
+
+  unsigned n_thr = td::thread::hardware_concurrency();
+
+#ifdef BOC_DS_BP_USE_ACTORS
+  // Do we have Actor Scheduler Context? We should.
+  auto context = td::actor::SchedulerContext::get();
+  if (context != nullptr && !context->scheduler_group()->schedulers.empty()) {
+    n_thr = context->scheduler_group()->schedulers.front().cpu_threads_count - 1;
+  } else {
+#endif
+    n_thr = std::min(4u, n_thr);
+#ifdef BOC_DS_BP_USE_ACTORS
+  }
+#endif
 #if METRICS_MEASURE == MM_BOC_BLAST_MT
   m::a1.fetch_add(cell_count);
 #endif
@@ -1123,12 +1143,51 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
       }
       if (--sz == 0) {
         sz = (int)deferred_queue.size();
-        // printf("thread %i, remain %i items\n", my_id, (int)deferred_queue.size());
+        // td::this_thread::yield(); // Does not work???
+        // sched_yield(); // Also does not work???
+        // td::this_thread::yield(); // Also does not work...
+        // ^^ WTF, this adds about 0.5 seconds to CPU time
       }
     }
   };
 
   if (n_thr > 1) {
+#ifdef BOC_DS_BP_USE_ACTORS
+    class Worker : public td::actor::Actor {
+     public:
+      explicit Worker(td::Promise<> promise) : promise_(std::move(promise)) {
+      }
+
+      void start_up() override {
+        promise_.set_value(td::Unit());
+        stop();
+      }
+
+     private:
+      td::Promise<> promise_;
+    };
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    unsigned n_done = 0;
+
+    for (unsigned i = 0; i < n_thr; i++) {
+      td::actor::create_actor<Worker>(PSLICE() << "Worker#" << i,
+        td::Promise([&](td::Unit) {
+          task();
+          std::lock_guard guard(mutex);
+          n_done++;
+          if (n_done == n_thr) {
+            cv.notify_all();
+          }
+        })).release();
+    }
+
+    {
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [&] { return n_done == n_thr; });
+    }
+#else
     std::vector<td::thread> threads;
     for (unsigned i = 0; i < n_thr; i++) {
       threads.emplace_back(task);
@@ -1137,6 +1196,7 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
       thr.join();
     }
     threads.clear();
+#endif
   } else {
     task();
   }
