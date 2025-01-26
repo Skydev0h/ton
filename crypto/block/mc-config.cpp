@@ -513,34 +513,53 @@ td::Result<std::unique_ptr<ValidatorSet>> Config::unpack_validator_set(Ref<vm::C
         "maximal index in a validator set dictionary must be one less than the total number of validators");
   }
   auto ptr = std::make_unique<ValidatorSet>(rec.utime_since, rec.utime_until, rec.total, rec.main);
-  for (int i = 0; i < rec.total; i++) {
-    key_buffer.store_ulong(i);
-    auto descr_cs = dict.lookup(key_buffer.bits(), 16);
-    if (descr_cs.is_null()) {
-      return td::Status::Error("indices in a validator set dictionary must be integers 0..total-1");
-    }
-    gen::ValidatorDescr::Record_validator_addr descr;
-    if (!tlb::csr_unpack(descr_cs, descr)) {
-      descr.adnl_addr.set_zero();
-      if (!(gen::t_ValidatorDescr.unpack_validator(descr_cs.write(), descr.public_key, descr.weight) &&
-            descr_cs->empty_ext())) {
-        return td::Status::Error(PSLICE() << "validator #" << i
-                                          << " has an invalid ValidatorDescr record in the validator set dictionary");
+  int i = 0;
+  td::Slice error = "";
+  // sd: Walking through dictionary is MUCH faster than performing lots of lookups!
+  // By maintaining running index `i` we can make sure everything is in order (and make sure to check key_len)
+  // As an additional bonus we already receive the `descr_cs` slice
+  const bool ok = dict.check_for_each(
+    [&](Ref<vm::CellSlice> descr_cs, td::ConstBitPtr key, int key_len) -> bool {
+      if (key_len != 16) {
+        error = "invalid key length in validator set dictionary";
+        return false;
       }
+      if (i++ != key.get_uint(16)) {
+        error = "indices in a validator set dictionary must be integers 0..total-1";
+        return false;
+      }
+      gen::ValidatorDescr::Record_validator_addr descr;
+      if (!tlb::csr_unpack(descr_cs, descr)) {
+        descr.adnl_addr.set_zero();
+        if (!(gen::t_ValidatorDescr.unpack_validator(descr_cs.write(), descr.public_key, descr.weight) &&
+              descr_cs->empty_ext())) {
+          error = PSLICE() << "validator #" << i << " has an invalid ValidatorDescr record in the validator set dictionary";
+          return false;
+        }
+      }
+      gen::SigPubKey::Record sig_pubkey;
+      if (!tlb::csr_unpack(std::move(descr.public_key), sig_pubkey)) {
+        error = PSLICE() << "validator #" << i << " has no public key or its public key is in unsupported format";
+        return false;
+      }
+      if (!descr.weight) {
+        error = PSLICE() << "validator #" << i << " has zero weight";
+        return false;
+      }
+      if (descr.weight > ~(ptr->total_weight)) {
+        error = "total weight of all validators in validator set exceeds 2^64";
+        return false;
+      }
+      ptr->list.emplace_back(sig_pubkey.pubkey, descr.weight, ptr->total_weight, descr.adnl_addr);
+      ptr->total_weight += descr.weight;
+      return true;
     }
-    gen::SigPubKey::Record sig_pubkey;
-    if (!tlb::csr_unpack(std::move(descr.public_key), sig_pubkey)) {
-      return td::Status::Error(PSLICE() << "validator #" << i
-                                        << " has no public key or its public key is in unsupported format");
-    }
-    if (!descr.weight) {
-      return td::Status::Error(PSLICE() << "validator #" << i << " has zero weight");
-    }
-    if (descr.weight > ~(ptr->total_weight)) {
-      return td::Status::Error("total weight of all validators in validator set exceeds 2^64");
-    }
-    ptr->list.emplace_back(sig_pubkey.pubkey, descr.weight, ptr->total_weight, descr.adnl_addr);
-    ptr->total_weight += descr.weight;
+  );
+  if (i != rec.total) {
+    return td::Status::Error("validator set declares incorrect number of validators");
+  }
+  if (!ok) {
+    return td::Status::Error(error);
   }
   if (rec.total_weight && rec.total_weight != ptr->total_weight) {
     return td::Status::Error("validator set declares incorrect total weight");

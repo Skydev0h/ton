@@ -14,6 +14,7 @@
 #include "vm/cells/MerkleProof.h"
 #include "ton/ton-tl.hpp"
 #include "block-auto.h"
+#include "metrics.h"
 #include "contest/solution/solution.hpp"
 #include "td/utils/PathView.h"
 #include "td/utils/port/signals.h"
@@ -97,6 +98,9 @@ class ContestGrader : public td::actor::Actor {
     td::BufferSlice collated_data = std::move(test->collated_data_);
     bool valid = test->valid_;
 
+    vm::DataCell::reset_temp_arena();
+    vm::DataCell::use_temp_arena = true;
+
     td::Ref<vm::Cell> original_merkle_update;
     auto S = [&]() -> td::Status {
       TRY_RESULT(root, vm::std_boc_deserialize(block_data));
@@ -133,6 +137,8 @@ class ContestGrader : public td::actor::Actor {
                                   original_merkle_update, timer.elapsed(),
                                   (double)(get_cpu_usage() - start_cpu) / CPU_USAGE_PER_SEC);
         });
+
+    // DO NOT disable temp arena here, do it in promise!
   }
 
   td::Result<tl_object_ptr<ton_api::contest_test>> read_test_file() {
@@ -142,6 +148,12 @@ class ContestGrader : public td::actor::Actor {
 
   void got_solution_result(td::Result<td::BufferSlice> res, bool valid, td::Ref<vm::Cell> original_merkle_update,
                            double elapsed, double cpu_time) {
+
+    // DO NOT disable temp arena yet, check_merkle_update will call vm::std_boc_deserialize later
+#ifdef METRICS_ENABLE
+    m::postprocess();
+#endif
+
     bool got_valid = res.is_ok();
     if (got_valid != valid) {
       printf("%*lu  %-*s %8.5f %8.5f  ERROR  expected %s, found %s\n", (int)test_idx_column_width_, test_idx_ + 1,
@@ -150,15 +162,23 @@ class ContestGrader : public td::actor::Actor {
       fflush(stdout);
       ++cnt_fail_;
       ++test_idx_;
+      vm::DataCell::use_temp_arena = false; // <- are these even needed here?
       run_next_test();
       return;
     }
     if (!valid) {
+      // METRICS_ENABLE defined or not in crypto/metrics.h
+#ifndef METRICS_ENABLE
       printf("%*lu  %-*s %8.5f %8.5f  OK     block is INVALID\n", (int)test_idx_column_width_, test_idx_ + 1,
              (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time);
+#else
+      printf("%*lu  %-*s %8.5f %8.5f  OK     block is INVALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
+             (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2);
+#endif
       fflush(stdout);
       ++cnt_ok_;
       ++test_idx_;
+      vm::DataCell::use_temp_arena = false;
       run_next_test();
       return;
     }
@@ -169,17 +189,31 @@ class ContestGrader : public td::actor::Actor {
       fflush(stdout);
       ++cnt_fail_;
       ++test_idx_;
+      vm::DataCell::use_temp_arena = false;
       run_next_test();
       return;
     }
 
+#ifndef METRICS_ENABLE
     printf("%*lu  %-*s %8.5f %8.5f  OK     block is VALID\n", (int)test_idx_column_width_, test_idx_ + 1,
            (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time);
+#else
+    printf("%*lu  %-*s %8.5f %8.5f  OK     block is VALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
+           (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2);
+#endif
     fflush(stdout);
+#ifdef METRICS_ENABLE
+#ifdef METRICS_PER_ITERATION
+    m::u1 = m::u2 = m::u3 = 0;
+    m::d1 = m::d2 = 0;
+    m::a1 = m::a2 = m::a3 = 0;
+#endif
+#endif
     total_time_ += elapsed;
     total_cpu_time_ += cpu_time;
     ++cnt_ok_;
     ++test_idx_;
+    vm::DataCell::use_temp_arena = false;
     run_next_test();
   }
 

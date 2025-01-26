@@ -98,6 +98,9 @@ inline vm::CellHash as_cell_hash(td::Slice hash) {
 inline vm::CellHash as_cell_hash(vm::CellHash hash) {
   return hash;
 }
+
+// tc: Cell HashSet Eq/HashF
+
 struct CellEqF {
   using is_transparent = void;  // Pred to use
   template <class A, class B>
@@ -105,13 +108,38 @@ struct CellEqF {
     return as_cell_hash(a) == as_cell_hash(b);
   }
 };
+
 struct CellHashF {
   using is_transparent = void;  // Pred to use
   using transparent_key_equal = CellEqF;
   template <class T>
   size_t operator()(const T& value) const {
-    return cell_hash_slice_hash(as_cell_hash(value).as_slice());
+    // sd: also using optimized function for this op
+    return cell_hash_direct(as_cell_hash(value));
   }
 };
+
 using CellHashSet = td::HashSet<td::Ref<Cell>, CellHashF, CellEqF>;
+
+// sd: CellHash HashSet Eq/HashF
+
+struct CellHashEqF {
+  using is_transparent = void;  // Pred to use
+  template <class A, class B>
+  bool operator()(const A& a, const B& b) const {
+    return a == b;
+  }
+};
+
+struct CellHashHashF {
+  using is_transparent = void;  // Pred to use
+  using transparent_key_equal = CellHashEqF;
+  template <class T>
+  size_t operator()(const T& value) const {
+    return cell_hash_direct(value);
+  }
+};
+
+using CellHashHashSet = td::HashSet<vm::Cell::Hash, CellHashHashF, CellHashEqF>;
+
 }  // namespace vm

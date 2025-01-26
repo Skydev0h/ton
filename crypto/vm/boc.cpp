@@ -20,6 +20,9 @@
 #include <iomanip>
 #include <algorithm>
 #include "vm/boc.h"
+
+#include "metrics.h"
+#include "td/actor/common.h"
 #include "vm/boc-writers.h"
 #include "vm/cells.h"
 #include "vm/cellslice.h"
@@ -28,6 +31,8 @@
 #include "td/utils/format.h"
 #include "td/utils/misc.h"
 #include "td/utils/Slice-decl.h"
+
+#include <queue>
 
 namespace vm {
 using td::Ref;
@@ -50,7 +55,6 @@ td::Status CellSerializationInfo::init(td::uint8 d1, td::uint8 d2, int ref_byte_
   level_mask = Cell::LevelMask(d1 >> 5);
   special = (d1 & 8) != 0;
   with_hashes = (d1 & 16) != 0;
-
   if (refs_cnt > 4) {
     if (refs_cnt != 7 || !with_hashes) {
       return td::Status::Error("Invalid first byte");
@@ -775,6 +779,17 @@ td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell(int idx, td::Slic
   if (cell_info.end_offset != cell_slice.size()) {
     return td::Status::Error("unused space in cell serialization");
   }
+#if METRICS_MEASURE == MM_BOC_HASH_REF
+  m::u1 += 1;
+  m::u2 += cell_info.with_hashes; //  186600 / 6963028 = 0.02705 (2.7%) cells have hashes
+  m::u3 += cell_info.refs_cnt;    // 8162053 / 6963028 = 1.17216 refs per cell on average
+#endif
+
+#if METRICS_MEASURE == MM_BOC_SIZE_SPEC
+  m::u1 += 1;
+  m::u2 += cell_info.end_offset; // size
+  m::u3 += cell_info.special;
+#endif
 
   auto refs = td::MutableSpan<td::Ref<Cell>>(refs_buf).substr(0, cell_info.refs_cnt);
   for (int k = 0; k < cell_info.refs_cnt; k++) {
@@ -799,6 +814,140 @@ td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell(int idx, td::Slic
 
   return cell_info.create_data_cell(cell_slice, refs);
 }
+
+td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast_initial(
+  int idx, td::Slice cells_slice, td::Ref<DataCell> cells_span[],
+  std::vector<td::uint8>* cell_should_cache, std::queue<DeferredCellData>& deferred_queue,
+  std::mutex cell_cache_mutexes[]) {
+  TRY_RESULT(cell_slice, get_cell_slice(idx, cells_slice));
+  std::array<td::Ref<Cell>, 4> refs_buf;
+
+  CellSerializationInfo cell_info;
+  TRY_STATUS(cell_info.init(cell_slice, info.ref_byte_size));
+  if (cell_info.end_offset != cell_slice.size()) {
+    return td::Status::Error("unused space in cell serialization");
+  }
+
+  auto refs = td::MutableSpan<td::Ref<Cell>>(refs_buf).substr(0, cell_info.refs_cnt);
+  bool missing_no = false;
+  for (int k = 0; k < cell_info.refs_cnt; k++) {
+    int ref_idx = (int)info.read_ref(cell_slice.ubegin() + cell_info.refs_offset + k * info.ref_byte_size);
+    if (ref_idx <= idx) {
+      return td::Status::Error(PSLICE() << "bag-of-cells error: reference #" << k << " of cell #" << idx
+                                        << " is to cell #" << ref_idx << " with smaller index");
+    }
+    if (ref_idx >= cell_count) {
+      return td::Status::Error(PSLICE() << "bag-of-cells error: reference #" << k << " of cell #" << idx
+                                        << " is to non-existent cell #" << ref_idx << ", only " << cell_count
+                                        << " cells are defined");
+    }
+    refs[k] = cells_span[ref_idx];
+    if (refs[k].is_null()) {
+      // printf("missing ref #%i -> (%i) %i\n", idx, k, ref_idx);
+      missing_no = true; // defer ... deferring, so that cell_should_cache be set correctly, and all indexes be checked
+    }
+    if (cell_should_cache) {
+      std::lock_guard guard(cell_cache_mutexes[ref_idx]);
+      auto& cnt = (*cell_should_cache)[ref_idx];
+      if (cnt < 2) {
+        cnt++;
+      }
+    }
+  }
+
+  if (missing_no) {
+    deferred_queue.push({idx, cell_info, cell_slice});
+    return Ref<DataCell>(); // nullptr
+  }
+
+  return cell_info.create_data_cell(cell_slice, refs);
+}
+
+td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast_deferred(
+  const DeferredCellData& cell, td::Ref<DataCell> cells_span[]) {
+  std::array<td::Ref<Cell>, 4> refs_buf;
+  auto refs = td::MutableSpan<td::Ref<Cell>>(refs_buf).substr(0, cell.info.refs_cnt);
+
+  for (int k = 0; k < cell.info.refs_cnt; k++) {
+    int ref_idx = (int)info.read_ref(cell.slice.ubegin() + cell.info.refs_offset + k * info.ref_byte_size);
+    refs[k] = cells_span[ref_idx];
+    if (refs[k].is_null()) {
+      return Ref<DataCell>(); // nullptr
+    }
+  }
+
+  return cell.info.create_data_cell(cell.slice, refs);
+}
+
+/*
+// [Depth queues approach]
+td::Result<td::Ref<vm::DataCell>> BagOfCells::deserialize_cell_blast(
+  const std::tuple<int, CellSerializationInfo, td::Slice>& args,
+  td::Span<td::Ref<DataCell>> cells_span, std::vector<td::uint8>* cell_should_cache) {
+  // All checks can be skipped because they were already performed in register_cell_in_queue
+  auto& idx = std::get<0>(args);
+  auto& cell_info = std::get<1>(args);
+  auto& cell_slice = std::get<2>(args);
+  std::array<td::Ref<Cell>, 4> refs_buf;
+  auto refs = td::MutableSpan<td::Ref<Cell>>(refs_buf).substr(0, cell_info.refs_cnt);
+  for (int k = 0; k < cell_info.refs_cnt; k++) {
+    int ref_idx = (int)info.read_ref(cell_slice.ubegin() + cell_info.refs_offset + k * info.ref_byte_size);
+    // printf("idx %i want ref %i\n", idx, ref_idx);
+    refs[k] = cells_span[ref_idx];
+    if (cell_should_cache) {
+      auto& cnt = (*cell_should_cache)[ref_idx];
+      if (cnt < 2) {
+        cnt++;
+      }
+    }
+  }
+  return cell_info.create_data_cell(cell_slice, refs);
+}
+
+td::Result<int> BagOfCells::register_cell_in_queue(
+  std::vector<std::deque<std::tuple<int, CellSerializationInfo, td::Slice>>>& cell_queues,
+  int depth, int idx, td::Slice cells_slice) {
+
+  TRY_RESULT(cell_slice, get_cell_slice(idx, cells_slice));
+
+  CellSerializationInfo cell_info;
+  TRY_STATUS(cell_info.init(cell_slice, info.ref_byte_size));
+
+  if (cell_info.end_offset != cell_slice.size()) {
+    return td::Status::Error("unused space in cell serialization");
+  }
+
+  // printf("register cell: idx=%i, depth=%i, refs_cnt=%i, with_hashes=%i, lm_hc=%i\n",
+  //   idx, depth, cell_info.refs_cnt, cell_info.with_hashes, cell_info.level_mask.get_hashes_count());
+
+  if (cell_queues.size() <= depth) {
+    cell_queues.resize(depth + 1);
+  }
+
+  cell_queues[depth].emplace_back(idx, cell_info, cell_slice);
+
+  int c_depth = depth;
+  for (int k = 0; k < cell_info.refs_cnt; k++) {
+    int ref_idx = (int)info.read_ref(cell_slice.ubegin() + cell_info.refs_offset + k * info.ref_byte_size);
+    // printf("register ref cell %i\n", ref_idx);
+    if (ref_idx <= idx) {
+      return td::Status::Error(PSLICE() << "bag-of-cells error: reference #" << k << " of cell #" << idx
+                                        << " is to cell #" << ref_idx << " with smaller index");
+    }
+    if (ref_idx >= cell_count) {
+      return td::Status::Error(PSLICE() << "bag-of-cells error: reference #" << k << " of cell #" << idx
+                                        << " is to non-existent cell #" << ref_idx << ", only " << cell_count
+                                        << " cells are defined");
+    }
+    TRY_RESULT(r_depth, register_cell_in_queue(cell_queues, depth + 1, ref_idx, cells_slice));
+    if (r_depth > c_depth) {
+      c_depth = r_depth;
+    }
+  }
+
+  return c_depth;
+}
+*/
 
 td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roots) {
   clear();
@@ -847,7 +996,7 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
     if (idx < 0 || idx >= info.cell_count) {
       return td::Status::Error(PSLICE() << "bag-of-cells invalid root index " << idx);
     }
-    roots[i].idx = info.cell_count - idx - 1;
+    roots[i].idx = idx;
     if (info.has_cache_bits) {
       auto& cnt = cell_should_cache[idx];
       if (cnt < 2) {
@@ -881,14 +1030,198 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
                                         << cur << " is different from total data size " << info.data_size);
     }
   }
+
+  // =====================================================================================================================
+  // Enable blast processing for Bag of Cells deserialization (comment for better CPU time... hopefully):
+  #define BOC_DS_BLAST_PROCESSING
+  // =====================================================================================================================
+
   auto cells_slice = data.substr(info.data_offset, info.data_size);
+
+#ifdef BOC_DS_BLAST_PROCESSING
+  Ref<DataCell> cell_list[cell_count];
+  std::mutex cell_cache_mutexes[info.has_cache_bits ? cell_count : 0];
+#else
   std::vector<Ref<DataCell>> cell_list;
   cell_list.reserve(cell_count);
   std::array<td::Ref<Cell>, 4> refs_buf;
+#endif
+  // ===================================================================================================================
+  // sd: Need to properly order cell deserialization, so that it can be multithreaded. Profiler wouldn't lie!
+  // Cell construction / SHA256 is VERY slow / expensive. Multithreading this may be very beneficial. Maybe even SIMD.
+  // There are two approaches - collect queue by going recursive through cells from roots or by ordering by depth.
+  // I thought of another approach that should be more close to the original and should be more efficient than that stuff
+  // ===================================================================================================================
+  auto cell_should_cache_ptr = info.has_cache_bits ? &cell_should_cache : nullptr;
+  // auto cell_cache_mutexes_ptr = info.has_cache_bits ? &cell_cache_mutexes : nullptr;
+#ifdef BOC_DS_BLAST_PROCESSING
+  // Optimistic - pessimistic approach to cell deserialization
+  // Step 1: Try to deserialize cells from end, sieve by thread pool size
+  //    Rationale is that leaves (which can be serialized right away) can be all around the tree, so need to visit all
+  //    If deserialization fails because of missing refs, put cell information into deferred queue (thread private)
+  //    !!! Also, additional checks on indices and cell structure are performed in THIS step !!!
+  // Step 2: Try to deserialize cells from deferred queue
+  //    If refs are still missing, put cell back into the queue
+  //    N.B.: No need to lock refs. There may be possible race condition that thread misses a ref, but that's OK.
+  //    Burden from missing a cell should be less than synchronizing each and every access to cell list.
+  const unsigned n_thr = std::min(4u, td::thread::hardware_concurrency()); // currently, 4 seems to be the most optimal amount of threads
+#if METRICS_MEASURE == MM_BOC_BLAST_MT
+  m::a1.fetch_add(cell_count);
+#endif
+  std::atomic_uint32_t task_id{0};
+  bool okay = true;
+  td::Status status;
+  auto task = [&] {
+    unsigned my_id = task_id++;
+    std::queue<DeferredCellData> deferred_queue; // thread-private
+    for (int idx = cell_count - 1 - my_id; idx >= 0; idx -= n_thr) { // NOLINT(*-narrowing-conversions) - really?
+      if (!okay) {
+        return;
+      }
+      auto r_cell = deserialize_cell_blast_initial(idx, cells_slice, cell_list,
+        cell_should_cache_ptr, deferred_queue, cell_cache_mutexes);
+      if (r_cell.is_error()) {
+        okay = false;
+        status = td::Status::Error(PSLICE() << "I#" << idx << " " << r_cell.move_as_error());
+        return;
+      }
+      auto cell = r_cell.move_as_ok();
+      if (!cell.is_null()) {
+
+        // printf("#%i <- %i refs, %s\n", idx, cell->get_refs_cnt(), cell->get_hash().to_hex().c_str());
+        // null is returned if skipped (moved to deferred queue)
+        cell_list[idx] = std::move(cell);
+      }
+    }
+    // printf("thread %i, deferred %i items\n", my_id, (int)deferred_queue.size());
+#if METRICS_MEASURE == MM_BOC_BLAST_MT
+    m::a2.fetch_add(deferred_queue.size());
+#endif
+    int sz = (int)deferred_queue.size();
+    // no thread safety, since deferred queue is private
+    while (!deferred_queue.empty()) {
+      if (!okay) {
+        return;
+      }
+      auto dc_data = deferred_queue.front();
+      deferred_queue.pop();
+      auto r_cell = deserialize_cell_blast_deferred(dc_data, cell_list);
+      if (r_cell.is_error()) {
+        okay = false;
+        status = td::Status::Error(PSLICE() << "D#" << dc_data.idx << " " << r_cell.move_as_error());
+        return;
+      }
+      auto cell = r_cell.move_as_ok();
+      if (!cell.is_null()) {
+        cell_list[dc_data.idx] = std::move(cell);
+      } else {
+        // printf("thread %i still deferring %i\n", my_id, dc_data.idx);
+#if METRICS_MEASURE == MM_BOC_BLAST_MT
+        m::a3.fetch_add(1);
+#endif
+        deferred_queue.push(dc_data);
+      }
+      if (--sz == 0) {
+        sz = (int)deferred_queue.size();
+        // printf("thread %i, remain %i items\n", my_id, (int)deferred_queue.size());
+      }
+    }
+  };
+
+  if (n_thr > 1) {
+    std::vector<td::thread> threads;
+    for (unsigned i = 0; i < n_thr; i++) {
+      threads.emplace_back(task);
+    }
+    for (auto& thr : threads) {
+      thr.join();
+    }
+    threads.clear();
+  } else {
+    task();
+  }
+
+  if (!okay) {
+    return status.move();
+  }
+  /*
+  // [Depth queues approach]
+  // In case of depth ordering we will have massive parallelism at start but very small amount of cells in final queues.
+  // In case of recursive ordering we will have parallelism by tree "layer", but obtaining ref idx is more expensive than depth.
+  // !!! It turns out that only recursive ordering is possible because BoC cells may omit information about hashes AND DEPTHS.
+  // And since by measurement results only 2.7% of BoCs have hashes, it is not worth to optimize for that situation.
+  // N.B!!! Parallel cell processing added as optional #ifdef because building queues takes noticeable CPU time!
+  // Total CPU time increases from 3.32 to 3.55 with all this stuff
+  std::mutex cell_mutexes[cell_count];
+  std::vector< std::deque<std::tuple<int, CellSerializationInfo, td::Slice>> > cell_queues;
+  int estimated_depth = static_cast<int>(std::ceil(std::log(info.cell_count) * 5)); // It is better to overestimate to avoid resizes
+  cell_queues.resize(estimated_depth); // Estimate depth
+  int max_depth = 0;
+  // TODO: There are either 1 root or lots of them (in order of tens). It may be useful to multithread this too if many roots.
+  for (auto& root_info : roots) {
+    auto r_depth_r = register_cell_in_queue(cell_queues, 0, root_info.idx, cells_slice);
+    if (r_depth_r.is_error()) {
+      // Do not have error info unfortunately
+      return td::Status::Error(PSLICE() << "invalid bag-of-cells failed to deserialize cell: " << r_depth_r.move_as_error());
+    }
+    int r_depth = r_depth_r.move_as_ok();
+    if (r_depth > max_depth) {
+      max_depth = r_depth;
+    }
+  }
+  cell_queues.resize(max_depth + 1);
+  std::mutex queue_mutexes[cell_queues.size()];
+
+  printf("boc deserialize: cells %i, est depth %i, max depth %i, roots %lu\n", info.cell_count, estimated_depth, max_depth, roots.size());
+  printf("queue lengths: ");
+  for (int depth = 0; depth < max_depth; depth++) {
+    printf("%lu ", cell_queues[depth].size());
+  }
+  printf("\n");
+
+
+  std::atomic_uint8_t pending = 0;
+
+  // Test sequential impl to check correctness
+  for (int depth = max_depth; depth >= 0; --depth) {
+    auto& queue = cell_queues[depth];
+    // for (auto& cell_info : queue) {
+    while (!queue.empty()) {
+      queue_mutexes[depth].lock();
+      if (queue.empty()) {
+        queue_mutexes[depth].unlock();
+        break;
+      }
+      std::tuple<int, CellSerializationInfo, td::Slice>& cell_info = queue.back();
+      queue.pop_back();
+      queue_mutexes[depth].unlock();
+      int idx = std::get<0>(cell_info);
+      if (cell_mutexes[idx].try_lock())
+      {
+        if (cell_list[idx].not_null()) {
+          cell_mutexes[idx].unlock();
+          // printf("skip cell %i\n", idx);
+          continue;
+        }
+        auto r_cell = deserialize_cell_blast(cell_info, cell_list, cell_should_cache_ptr);
+        if (r_cell.is_error()) {
+          cell_mutexes[idx].unlock();
+          return td::Status::Error(PSLICE() << "invalid bag-of-cells failed to deserialize cell #" << idx << " "
+                                            << r_cell.error());
+        }
+        // printf("store cell %i\n", idx);
+        cell_list[idx] = r_cell.move_as_ok();
+        DCHECK(cell_list[idx].not_null());
+        cell_mutexes[idx].unlock();
+      }
+    }
+  }
+  */
+#else
   for (int i = 0; i < cell_count; i++) {
     // reconstruct cell with index cell_count - 1 - i
     int idx = cell_count - 1 - i;
-    auto r_cell = deserialize_cell(idx, cells_slice, cell_list, info.has_cache_bits ? &cell_should_cache : nullptr);
+    auto r_cell = deserialize_cell(idx, cells_slice, cell_list, cell_should_cache_ptr);
     if (r_cell.is_error()) {
       return td::Status::Error(PSLICE() << "invalid bag-of-cells failed to deserialize cell #" << idx << " "
                                         << r_cell.error());
@@ -896,6 +1229,9 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
     cell_list.push_back(r_cell.move_as_ok());
     DCHECK(cell_list.back().not_null());
   }
+#endif
+  // sd: At this point all cells must be deserialized and put into cell ~~list~~ vector properly...
+  // ===================================================================================================================
   if (info.has_cache_bits) {
     for (int idx = 0; idx < cell_count; idx++) {
       auto should_cache = cell_should_cache[idx] > 1;
@@ -911,9 +1247,12 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   root_count = info.root_count;
   dangle_count = info.absent_count;
   for (auto& root_info : roots) {
+#ifdef BOC_DS_BLAST_PROCESSING
     root_info.cell = cell_list[root_info.idx];
+#else
+    root_info.cell = cell_list[info.cell_count - root_info.idx - 1];
+#endif
   }
-  cell_list.clear();
   return size_est;
 }
 
@@ -1148,9 +1487,9 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::
     return td::Status::Error("cell is null");
   }
   if (kill_dup) {
-    auto ins = seen.emplace(cell->get_hash(), CellInfo{});
+    auto ins = seen.emplace(cell->get_hash());
     if (!ins.second) {
-      return ins.first->second;
+      return CellInfo{};
     }
   }
   vm::CellSlice cs{vm::NoVm{}, std::move(cell)};

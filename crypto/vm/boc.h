@@ -31,6 +31,9 @@
 #include "td/utils/Timer.h"
 #include "td/utils/port/FileFd.h"
 
+#include <queue>
+#include <tr1/tuple>
+
 namespace vm {
 using td::Ref;
 
@@ -102,8 +105,10 @@ class NewCellStorageStat {
  private:
   const CellUsageTree* usage_tree_;
   std::set<vm::Cell::Hash> seen_;
+  // CellHashHashSet seen_;
   Stat stat_;
   std::set<vm::Cell::Hash> proof_seen_;
+  // CellHashHashSet proof_seen_;
   Stat proof_stat_;
   const NewCellStorageStat* parent_{nullptr};
 
@@ -117,7 +122,9 @@ struct CellStorageStat {
   struct CellInfo {
     td::uint32 max_merkle_depth = 0;
   };
-  std::map<vm::Cell::Hash, CellInfo> seen;
+  // sd: optimization - map -> unordered_map -> unordered_set -> td::HashSet ->
+  // CellHashHashSet with custom Hash/Eq F via slice -> via direct bits
+  CellHashHashSet seen;
   CellStorageStat() : cells(0), bits(0), public_cells(0) {
   }
   explicit CellStorageStat(unsigned long long limit_cells)
@@ -152,7 +159,8 @@ struct CellStorageStat {
 
 struct VmStorageStat {
   td::uint64 cells{0}, bits{0}, refs{0}, limit;
-  td::HashSet<CellHash> visited;
+  // td::HashSet<CellHash> visited;
+  CellHashHashSet visited;
   VmStorageStat(td::uint64 _limit) : limit(_limit) {
   }
   bool add_storage(Ref<Cell> cell);
@@ -199,6 +207,12 @@ struct CellSerializationInfo {
   td::Result<int> get_bits(td::Slice cell) const;
 
   td::Result<Ref<DataCell>> create_data_cell(td::Slice data, td::Span<Ref<Cell>> refs) const;
+};
+
+struct DeferredCellData {
+  int idx;
+  CellSerializationInfo info;
+  td::Slice slice;
 };
 
 class BagOfCellsLogger {
@@ -379,6 +393,22 @@ class BagOfCells {
   td::Result<td::Slice> get_cell_slice(int index, td::Slice data);
   td::Result<td::Ref<vm::DataCell>> deserialize_cell(int index, td::Slice data, td::Span<td::Ref<DataCell>> cells,
                                                      std::vector<td::uint8>* cell_should_cache);
+  td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast_initial(int idx, td::Slice cells_slice,
+                                                                   td::Ref<DataCell> cells_span[],
+                                                                   std::vector<td::uint8>* cell_should_cache,
+                                                                   std::queue<DeferredCellData>& deferred_queue,
+                                                                   std::mutex cell_cache_mutexes[]);
+  td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast_deferred(const DeferredCellData& cell,
+                                                                    td::Ref<DataCell> cells_span[]);
+  /*
+  // [Depth queues approach]
+  td::Result<td::Ref<vm::DataCell>> deserialize_cell_blast(const std::tuple<int, CellSerializationInfo, td::Slice>& args,
+                                                           td::Span<td::Ref<DataCell>> cells_span,
+                                                           std::vector<td::uint8>* cell_should_cache);
+  td::Result<int> register_cell_in_queue(
+      std::vector<std::deque<std::tuple<int, CellSerializationInfo, td::Slice>>>& cell_queues, int depth, int idx,
+      td::Slice cells_slice);
+  */
 };
 
 td::Result<Ref<Cell>> std_boc_deserialize(td::Slice data, bool can_be_empty = false, bool allow_nonzero_level = false);

@@ -57,6 +57,12 @@ ContestValidateQuery::ContestValidateQuery(BlockIdExt block_id, td::BufferSlice 
     , shard_pfx_len_(ton::shard_prefix_length(shard_)) {
 }
 
+// TODO: sd: contest-grader`vm::detail::CellWithUniquePtrStorage::~CellWithUniquePtrStorage is quite expensive
+// Likely caused by contest-grader`virtual thunk to ton::validator::MasterchainStateQ::~MasterchainStateQ
+// Consider some kind of destructible arena allocator for cells
+// TODO: sd !! IMPORTANT !! About 7% is spent in destructor! And another 4.3% in new operator for empty data cells!
+// Also, additional overhead in contest-grader`ContestGrader::run_next_test, this might have more impact!
+
 /**
  * Aborts the validation with the given error.
  *

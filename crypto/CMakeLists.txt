@@ -5,6 +5,9 @@ if (NOT OPENSSL_FOUND)
 endif()
 
 set(TON_CRYPTO_CORE_SOURCE
+  metrics.h
+  metrics.cpp
+
   Ed25519.cpp
   common/bigint.cpp
   common/refcnt.cpp
