@@ -70,6 +70,9 @@ CellUsageTree::NodeId CellUsageTree::root_id() const {
 };
 
 bool CellUsageTree::is_loaded(NodeId node_id) const {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   if (use_mark_) {
     return nodes_[node_id].has_mark;
   }
@@ -77,6 +80,9 @@ bool CellUsageTree::is_loaded(NodeId node_id) const {
 }
 
 bool CellUsageTree::has_mark(NodeId node_id) const {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   return nodes_[node_id].has_mark;
 }
 
@@ -84,21 +90,31 @@ void CellUsageTree::set_mark(NodeId node_id, bool mark) {
   if (node_id == 0) {
     return;
   }
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   nodes_[node_id].has_mark = mark;
 }
 
 void CellUsageTree::mark_path(NodeId node_id) {
-  auto cur_node_id = get_parent(node_id);
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
+  auto cur_node_id = nodes_[node_id].parent; // get_parent(node_id);
   while (cur_node_id != 0) {
-    if (has_mark(cur_node_id)) {
+    if (nodes_[cur_node_id].has_mark) {
       break;
     }
-    set_mark(cur_node_id);
-    cur_node_id = get_parent(cur_node_id);
+    nodes_[cur_node_id].has_mark = true;
+    // set_mark(cur_node_id);
+    cur_node_id = nodes_[cur_node_id].parent; // get_parent(cur_node_id);
   }
 }
 
 CellUsageTree::NodeId CellUsageTree::get_parent(NodeId node_id) {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   return nodes_[node_id].parent;
 }
 
@@ -112,6 +128,9 @@ void CellUsageTree::set_use_mark_for_is_loaded(bool use_mark) {
 }
 
 void CellUsageTree::on_load(NodeId node_id, const td::Ref<vm::DataCell>& cell) {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   if (nodes_[node_id].is_loaded) {
     return;
   }
@@ -122,6 +141,9 @@ void CellUsageTree::on_load(NodeId node_id, const td::Ref<vm::DataCell>& cell) {
 }
 
 CellUsageTree::NodeId CellUsageTree::create_child(NodeId node_id, unsigned ref_id) {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   DCHECK(ref_id < CellTraits::max_refs);
   NodeId res = nodes_[node_id].children[ref_id];
   if (res) {
@@ -133,6 +155,7 @@ CellUsageTree::NodeId CellUsageTree::create_child(NodeId node_id, unsigned ref_i
 }
 
 CellUsageTree::NodeId CellUsageTree::create_node(NodeId parent) {
+  // Internal only, mutex not needed
   NodeId res = static_cast<NodeId>(nodes_.size());
   nodes_.emplace_back();
   nodes_.back().parent = parent;

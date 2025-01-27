@@ -25,3 +25,17 @@
 // Size of memory slab allocated in one piece. Set to 4 MB for better locality.
 #define TEMP_ARENA_BATCH_SIZE 1 << 22
 
+// Check accounts (transactions) in parallel
+#define CVQ_CHECK_TX_PARALLEL
+
+// Enable CUT mutex manually (auto enabled if needed) - to measure perf
+#define CELL_USAGE_TREE_MUTEX
+
+// Use Actor Workers multithreading for accounts (transactions) checking
+#define CVQ_CHECK_TX_WITH_ACTORS
+
+// =====================================================================================================================
+#ifdef CVQ_CHECK_TX_PARALLEL
+// CUT mutex required if transactions are executed in parallel - different accounts may share same cells / CUTs
+#define CELL_USAGE_TREE_MUTEX
+#endif

@@ -23,6 +23,9 @@
 #include "td/utils/int_types.h"
 #include "td/utils/logging.h"
 #include <functional>
+#include <mutex>
+
+#include "contest/solution/sol-controls.h"
 
 namespace vm {
 
@@ -77,6 +80,10 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
   bool use_mark_{false};
   std::vector<Node> nodes_{2};
   std::function<void(const td::Ref<vm::DataCell>&)> cell_load_callback_;
+
+#ifdef CELL_USAGE_TREE_MUTEX
+  mutable std::mutex mutex_;
+#endif
 
   void on_load(NodeId node_id, const td::Ref<vm::DataCell>& cell);
   NodeId create_node(NodeId parent);

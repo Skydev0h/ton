@@ -150,8 +150,8 @@ std::list<char*> TemporaryArenaAllocator::allocated_pool{};
 std::mutex TemporaryArenaAllocator::mutex{};
 uint64_t TemporaryArenaAllocator::generation = 0;
 std::list<char*>::iterator TemporaryArenaAllocator::available = allocated_pool.end();
-}
 #endif
+}
 
 void DataCell::reset_temp_arena(bool hard) {
 #ifdef CELL_DATA_TEMP_ARENA

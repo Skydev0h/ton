@@ -15,6 +15,7 @@
 #include "common/errorlog.h"
 #include "fabric.h"
 #include <ctime>
+#include "contest/solution/sol-controls.h"
 
 namespace solution {
 
@@ -23,6 +24,11 @@ using namespace ton::validator;
 
 using td::Ref;
 using namespace std::literals::string_literals;
+
+const int POST_JOIN_NONE = 0;
+const int POST_JOIN_REJECT = 1;
+const int POST_JOIN_SOFT_REJECT = 2;
+const int POST_JOIN_FATAL_ERROR = 3;
 
 /**
  * Converts the error context to a string representation to show it in case of validation error.
@@ -36,6 +42,10 @@ std::string ErrorCtx::as_string() const {
     a += " : ";
   }
   return a;
+}
+
+uint64_t thread_id() {
+  return std::hash<std::thread::id>()(std::this_thread::get_id());
 }
 
 /**
@@ -63,6 +73,26 @@ ContestValidateQuery::ContestValidateQuery(BlockIdExt block_id, td::BufferSlice 
 // TODO: sd !! IMPORTANT !! About 7% is spent in destructor! And another 4.3% in new operator for empty data cells!
 // Also, additional overhead in contest-grader`ContestGrader::run_next_test, this might have more impact!
 
+void ContestValidateQuery::post_thread_join() {
+  switch (post_join_action_) {
+    case POST_JOIN_REJECT:
+      reject_query(std::move(post_join_string_), std::move(post_join_buffer_slice_));
+      break;
+    case POST_JOIN_SOFT_REJECT:
+      soft_reject_query(std::move(post_join_string_), std::move(post_join_buffer_slice_));
+      break;
+    case POST_JOIN_FATAL_ERROR:
+      fatal_error(std::move(post_join_status_));
+      break;
+    default:
+      break;
+  }
+  post_join_action_ = POST_JOIN_NONE;
+  post_join_string_ = "";
+  post_join_buffer_slice_ = td::BufferSlice();
+  post_join_status_ = td::Status::OK();
+}
+
 /**
  * Aborts the validation with the given error.
  *
@@ -81,6 +111,12 @@ void ContestValidateQuery::abort_query(td::Status error) {
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::reject_query(std::string error, td::BufferSlice reason) {
+  if (thread_id() != my_thread_id_) {
+    post_join_action_ = POST_JOIN_REJECT;
+    post_join_string_ = std::move(error);
+    post_join_buffer_slice_ = std::move(reason);
+    return false;
+  }
   error = error_ctx() + error;
   LOG(WARNING) << "REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
   if (main_promise) {
@@ -113,6 +149,12 @@ bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error, t
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::soft_reject_query(std::string error, td::BufferSlice reason) {
+  if (thread_id() != my_thread_id_) {
+    post_join_action_ = POST_JOIN_SOFT_REJECT;
+    post_join_string_ = std::move(error);
+    post_join_buffer_slice_ = std::move(reason);
+    return false;
+  }
   error = error_ctx() + error;
   LOG(WARNING) << "SOFT REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
   if (main_promise) {
@@ -130,6 +172,11 @@ bool ContestValidateQuery::soft_reject_query(std::string error, td::BufferSlice 
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::fatal_error(td::Status error) {
+  if (thread_id() != my_thread_id_) {
+    post_join_action_ = POST_JOIN_FATAL_ERROR;
+    post_join_status_ = std::move(error);
+    return false;
+  }
   error.ensure_error();
   LOG(WARNING) << "aborting validation of block candidate for " << shard_.to_str() << " : " << error.to_string();
   if (main_promise) {
@@ -181,6 +228,9 @@ bool ContestValidateQuery::fatal_error(std::string err_msg, int err_code) {
  * Finishes the query and sends the result to the promise.
  */
 void ContestValidateQuery::finish_query() {
+  if (thread_id() != my_thread_id_) {
+    fprintf(stderr, "finish_query() called from wrong thread\n");
+  }
   if (main_promise) {
     LOG(WARNING) << "validate query done";
     main_promise.set_result(std::move(result_state_update_));
@@ -201,6 +251,9 @@ void ContestValidateQuery::finish_query() {
  * Then the function also sends requests to the ValidatorManager to fetch blocks and shard stated.
  */
 void ContestValidateQuery::start_up() {
+  my_thread_id_ = thread_id();
+  post_join_action_ = POST_JOIN_NONE;
+
   LOG(INFO) << "validate query for " << id_.to_str() << " started";
   rand_seed_.set_zero();
 
@@ -4557,7 +4610,9 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
         }
       }
       if (info.created_lt != start_lt_ || !is_special_tx) {
+        std::lock_guard lock(mpl_mtx_);
         msg_proc_lt_.emplace_back(addr, lt, emitted_lt);
+        // ^ God damn this race condition... had to fire up ASAN + TSAN to locate this!
       }
       dest = std::move(info.dest);
       CHECK(money_imported.validate_unpack(info.value));
@@ -4660,6 +4715,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
                                     << addr.to_hex() << " refers to a different processing transaction");
     }
     if (tag != block::gen::OutMsg::msg_export_ext) {
+      std::lock_guard lock(aedam_mtx_);
       bool is_deferred = tag == block::gen::OutMsg::msg_export_new_defer;
       if (account_expected_defer_all_messages_.count(ss_addr) && !is_deferred) {
         return reject_query(
@@ -4883,9 +4939,12 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
     return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt
                                   << " for smart contract " << addr.to_hex());
   }
-  if (!trs->update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false)) {
-    return fatal_error(PSTRING() << "cannot update block limit status to include transaction " << lt << " of account "
-                                 << addr.to_hex());
+  {
+    std::lock_guard lock(bls_mtx_);
+    if (!trs->update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false)) {
+      return fatal_error(PSTRING() << "cannot update block limit status to include transaction " << lt << " of account "
+                                   << addr.to_hex());
+    }
   }
 
   // Collator should stop if total gas usage exceeds limits, including transactions on special accounts, but without
@@ -4953,7 +5012,10 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
         << "transaction " << lt << " of " << addr.to_hex()
         << " is invalid: it has produced a set of outbound messages different from that listed in the transaction");
   }
-  total_burned_ += trs->blackhole_burned;
+  {
+    std::lock_guard lock(tb_mtx_);
+    total_burned_ += trs->blackhole_burned;
+  }
   // check new balance and value flow
   auto new_balance = account.get_balance();
   block::CurrencyCollection total_fees;
@@ -5014,6 +5076,7 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
       // account created
       CHECK(account.status != block::Account::acc_nonexist);
       vm::CellBuilder cb;
+      std::lock_guard<std::mutex> guard(acc_mtx_);
       if (!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
             && cb.store_bits_bool(account.last_trans_hash_)    // last_trans_hash:bits256
             && cb.store_long_bool(account.last_trans_lt_, 64)  // last_trans_lt:uint64
@@ -5027,6 +5090,7 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
         std::cerr << "deleting account " << account.addr.to_hex() << " with empty new value ";
         block::gen::t_Account.print_ref(std::cerr, account.total_state);
       }
+      std::lock_guard<std::mutex> guard(acc_mtx_);
       if (ns_.account_dict_->lookup_delete(account.addr).is_null()) {
         return fatal_error(std::string{"cannot delete account "} + account.addr.to_hex() + " from ShardAccounts");
       }
@@ -5036,6 +5100,7 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
         std::cerr << "modifying account " << account.addr.to_hex() << " to ";
         block::gen::t_Account.print_ref(std::cerr, account.total_state);
       }
+      std::lock_guard<std::mutex> guard(acc_mtx_);
       vm::CellBuilder cb;
       if (!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
             && cb.store_bits_bool(account.last_trans_hash_)    // last_trans_hash:bits256
@@ -5052,9 +5117,12 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
     return reject_query("cannot extract (HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex());
   }
   block::tlb::ShardAccount::Record old_state, new_state;
-  if (!(old_state.unpack(ps_.account_dict_->lookup(account.addr)) &&
-        new_state.unpack(ns_.account_dict_->lookup(account.addr)))) {
-    return reject_query("cannot extract Account from the ShardAccount of "s + account.addr.to_hex());
+  {
+    std::lock_guard<std::mutex> guard(acc_mtx_);
+    if (!(old_state.unpack(ps_.account_dict_->lookup(account.addr)) &&
+          new_state.unpack(ns_.account_dict_->lookup(account.addr)))) {
+      return reject_query("cannot extract Account from the ShardAccount of "s + account.addr.to_hex());
+    }
   }
   if (hash_upd.old_hash != old_state.account->get_hash().bits()) {
     return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex() +
@@ -5077,15 +5145,58 @@ bool ContestValidateQuery::check_transactions() {
   LOG(INFO) << "checking all transactions";
   ns_.account_dict_ =
       std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
-  bool ok = account_blocks_dict_->check_for_each_extra(
-      [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
-        CHECK(key_len == 256);
-        return check_account_transactions(key, std::move(value));
+
+#ifdef CVQ_CHECK_TX_PARALLEL
+  constexpr unsigned num_threads = 7;
+  std::atomic_bool ok{true};
+  std::atomic<unsigned> task_id{0};
+
+  // printf("thread %llx master ac\n", std::hash<std::thread::id>()(std::this_thread::get_id()));
+  auto task = [&] {
+    unsigned my_task_id = task_id++;
+    bool _ok = account_blocks_dict_->check_for_each_extra(
+      [this, &ok, my_task_id] (Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+        if (!ok) {
+          return false;
+        }
+        // there is no difference - first bits, or last, or last of first byte
+        if (((*key.ptr) % num_threads) != my_task_id) {
+          return true; // skip
+        }
+        // printf("task %u processing account %llx\n", my_task_id, key.get_uint(64));
+        const bool res = check_account_transactions(key, std::move(value));
+        if (!res) {
+          ok = false;
+        }
+        return res;
       });
+    if (!_ok) {
+      ok = false;
+    }
+  };
+
+  std::vector<td::thread> threads;
+  for (size_t i = 0; i < num_threads; i++) {
+    threads.emplace_back(task);
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  threads.clear();
+
+  post_thread_join();
+
+  return ok.load();
+#else
+  bool ok = account_blocks_dict_->check_for_each_extra(
+    [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+      CHECK(key_len == 256);
+      return check_account_transactions(key, std::move(value));
+    });
+#endif
 
   return ok;
 }
-
 /**
  * Checks the processing order of messages in a block.
  *
