@@ -5147,7 +5147,17 @@ bool ContestValidateQuery::check_transactions() {
       std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
 
 #ifdef CVQ_CHECK_TX_PARALLEL
-  constexpr unsigned num_threads = 7;
+  unsigned n_thr = td::thread::hardware_concurrency();
+
+#ifdef CVQ_CHECK_TX_WITH_ACTORS
+  // Do we have Actor Scheduler Context? We should.
+  auto context = td::actor::SchedulerContext::get();
+  if (context != nullptr && !context->scheduler_group()->schedulers.empty()) {
+    n_thr = context->scheduler_group()->schedulers.front().cpu_threads_count - 1u;
+  }
+  n_thr = std::max(1u, n_thr);
+#endif
+
   std::atomic_bool ok{true};
   std::atomic<unsigned> task_id{0};
 
@@ -5155,12 +5165,12 @@ bool ContestValidateQuery::check_transactions() {
   auto task = [&] {
     unsigned my_task_id = task_id++;
     bool _ok = account_blocks_dict_->check_for_each_extra(
-      [this, &ok, my_task_id] (Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+      [this, &ok, n_thr, my_task_id] (Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
         if (!ok) {
           return false;
         }
         // there is no difference - first bits, or last, or last of first byte
-        if (((*key.ptr) % num_threads) != my_task_id) {
+        if (((*key.ptr) % n_thr) != my_task_id) {
           return true; // skip
         }
         // printf("task %u processing account %llx\n", my_task_id, key.get_uint(64));
@@ -5175,16 +5185,57 @@ bool ContestValidateQuery::check_transactions() {
     }
   };
 
-  std::vector<td::thread> threads;
-  for (size_t i = 0; i < num_threads; i++) {
-    threads.emplace_back(task);
-  }
-  for (auto &thread : threads) {
-    thread.join();
-  }
-  threads.clear();
+  if (n_thr > 1) {
+#ifdef CVQ_CHECK_TX_WITH_ACTORS
+    class Worker : public td::actor::Actor {
+    public:
+      explicit Worker(td::Promise<> promise) : promise_(std::move(promise)) {
+      }
 
-  post_thread_join();
+      void start_up() override {
+        promise_.set_value(td::Unit());
+        stop();
+      }
+
+    private:
+      td::Promise<> promise_;
+    };
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    unsigned n_done = 0;
+
+    for (unsigned i = 0; i < n_thr; i++) {
+      td::actor::create_actor<Worker>(PSLICE() << "Worker#" << i,
+        td::Promise([&](td::Unit) {
+          task();
+          std::lock_guard guard(mutex);
+          n_done++;
+          if (n_done == n_thr) {
+            cv.notify_all();
+          }
+        })).release();
+    }
+
+    {
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [&] { return n_done == n_thr; });
+    }
+#else
+    std::vector<td::thread> threads;
+    for (unsigned i = 0; i < n_thr; i++) {
+      threads.emplace_back(task);
+    }
+    for (auto& thr : threads) {
+      thr.join();
+    }
+    threads.clear();
+#endif
+
+    post_thread_join();
+  } else {
+    task();
+  }
 
   return ok.load();
 #else

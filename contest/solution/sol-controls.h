@@ -32,7 +32,8 @@
 #define CELL_USAGE_TREE_MUTEX
 
 // Use Actor Workers multithreading for accounts (transactions) checking
-#define CVQ_CHECK_TX_WITH_ACTORS
+// #define CVQ_CHECK_TX_WITH_ACTORS
+// ^^^ Threads seem to be noticeably faster for this task
 
 // =====================================================================================================================
 #ifdef CVQ_CHECK_TX_PARALLEL
