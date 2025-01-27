@@ -750,6 +750,16 @@ Ref<Cell> CellSlice::prefetch_ref(unsigned offset) const {
   }
 }
 
+Ref<Cell> CellSlice::prefetch_ref_no_usage_tree(unsigned offset) const {
+  if (offset < size_refs()) {
+    auto ref_id = refs_st + offset;
+    auto res = cell->get_ref(ref_id)->virtualize(child_virt());
+    return res;
+  } else {
+    return Ref<Cell>{};
+  }
+}
+
 Ref<Cell> CellSlice::fetch_ref() {
   if (have_refs()) {
     auto ref_id = refs_st++;

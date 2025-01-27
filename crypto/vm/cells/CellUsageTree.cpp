@@ -119,6 +119,9 @@ CellUsageTree::NodeId CellUsageTree::get_parent(NodeId node_id) {
 }
 
 CellUsageTree::NodeId CellUsageTree::get_child(NodeId node_id, unsigned ref_id) {
+#ifdef CELL_USAGE_TREE_MUTEX
+  std::lock_guard lock(mutex_);
+#endif
   DCHECK(ref_id < CellTraits::max_refs);
   return nodes_[node_id].children[ref_id];
 }
@@ -152,6 +155,17 @@ CellUsageTree::NodeId CellUsageTree::create_child(NodeId node_id, unsigned ref_i
   res = create_node(node_id);
   nodes_[node_id].children[ref_id] = res;
   return res;
+}
+
+bool CellUsageTree::is_loaded_no_lock(NodeId node_id) const {
+  if (use_mark_) {
+    return nodes_[node_id].has_mark;
+  }
+  return nodes_[node_id].is_loaded;
+}
+
+CellUsageTree::NodeId CellUsageTree::get_child_no_lock(NodeId node_id, unsigned ref_id) {
+  return nodes_[node_id].children[ref_id];
 }
 
 CellUsageTree::NodeId CellUsageTree::create_node(NodeId parent) {

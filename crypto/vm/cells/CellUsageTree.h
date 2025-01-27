@@ -66,6 +66,9 @@ class CellUsageTree : public std::enable_shared_from_this<CellUsageTree> {
   void set_use_mark_for_is_loaded(bool use_mark = true);
   NodeId create_child(NodeId node_id, unsigned ref_id);
 
+  bool is_loaded_no_lock(NodeId node_id) const;
+  NodeId get_child_no_lock(NodeId node_id, unsigned ref_id);
+
   void set_cell_load_callback(std::function<void(const td::Ref<vm::DataCell>&)> f) {
     cell_load_callback_ = std::move(f);
   }

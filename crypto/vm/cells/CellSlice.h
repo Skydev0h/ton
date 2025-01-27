@@ -181,6 +181,7 @@ class CellSlice : public td::CntObject {
     return (res = fetch_int256(bits, false)).not_null();
   }
   Ref<Cell> prefetch_ref(unsigned offset = 0) const;
+  Ref<Cell> prefetch_ref_no_usage_tree(unsigned offset) const;
   Ref<Cell> fetch_ref();
   bool fetch_ref_to(Ref<Cell>& ref) {
     return (ref = fetch_ref()).not_null();

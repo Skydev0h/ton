@@ -55,14 +55,22 @@ class MerkleProofImpl {
   CellUsageTree *usage_tree_{nullptr};
   MerkleProof::IsPrunnedFunction is_prunned_;
 
+  // TODO:
+  // 1. Pipeline for dfs_usage_tree
+  // 2. Pipeline for dfs
+  //    Construct later, keep index, !!! EVALUATE REFS !!!
+  // 3. Multiple visited_cells_ HashSets by hash for less locking
+  // 4. Synchronization primitives for visited_cells_
+
   void dfs_usage_tree(Ref<Cell> cell, CellUsageTree::NodeId node_id) {
-    if (!usage_tree_->is_loaded(node_id)) {
+    // sd: At this point usage_tree_ would not be updated. Therefore, we can avoid locks and extra calls on prefetch.
+    if (!usage_tree_->is_loaded_no_lock(node_id)) {
       return;
     }
     visited_cells_.insert(cell->get_hash());
     CellSlice cs(NoVm(), cell);
     for (unsigned i = 0; i < cs.size_refs(); i++) {
-      dfs_usage_tree(cs.prefetch_ref(i), usage_tree_->get_child(node_id, i));
+      dfs_usage_tree(cs.prefetch_ref_no_usage_tree(i), usage_tree_->get_child_no_lock(node_id, i));
     }
   }
 
@@ -88,7 +96,8 @@ class MerkleProofImpl {
     CellBuilder cb;
     cb.store_bits(cs.fetch_bits(cs.size()));
     for (unsigned i = 0; i < cs.size_refs(); i++) {
-      cb.store_ref(dfs(cs.prefetch_ref(i), children_merkle_depth));
+      // sd: We have already constructed visited_cells_ from our usage tree and can omit UsageCell::create stuff
+      cb.store_ref(dfs(cs.prefetch_ref_no_usage_tree(i), children_merkle_depth));
     }
     auto res = cb.finalize(cs.is_special());
     CHECK(res.not_null());
