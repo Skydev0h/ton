@@ -4,6 +4,9 @@
 // Disable parallel executions, they significantly sacrifice CPU time for total time
 // #define OPTIMIZE_FOR_CPU_TIME
 
+// Enable actor workers for accounts (transactions) checking
+// #define OPTIMIZE_FOR_PROFILING
+
 // =====================================================================================================================
 // Enable blast processing for Bag of Cells deserialization (comment for better CPU time... hopefully):
 #define BOC_DS_BLAST_PROCESSING
@@ -13,8 +16,11 @@
 #define BOC_DS_BP_USE_ACTORS
 // N.B. It seems that for profiling need to disable BP OR use Actors
 // =====================================================================================================================
-// Maximum number of threads to use with BOC DS BP without Actors (with threads / pthreads). 4u seems to be optimal.
-#define BOC_DS_BP_THR_NUM 4u
+// Maximum number of threads to use with BOC DS BP without Actors (with threads / pthreads). 5u seems to be optimal.
+#define BOC_DS_BP_THR_NUM 5u
+
+// Threads:    1        2        3        4     ** 5 **     6        7      Actor
+// Timing:  1.09358  0.91969  0.84247  0.65114  0.55378  0.73100  0.93146  0.49190
 
 // Uses "Deprecated" but significantly faster SHA256_... OpenSSL methods
 #define OPENSSL_FAST_SHA256
@@ -35,18 +41,15 @@
 #define CELL_USAGE_TREE_MUTEX
 
 // Use Actor Workers multithreading for accounts (transactions) checking
-// #define CVQ_CHECK_TX_WITH_ACTORS
-// ^^^ Threads seem to be noticeably faster for this task
+#define CVQ_CHECK_TX_WITH_ACTORS
+// ^^^ Threads seem to be noticeably faster for this task - now not really??
 // But may be useful for profiling to prevent mess
 
 // ----------------------- 2.72 / 4.53 / 5.05 - Normal opt
 // ----------------------- 3.39 / 3.33 / 5.05 - CPU Time opt
 
-// Enable parallel DFS pipeline for efficient creation of cells
+// Enable the parallel DFS pipeline for efficient creation of cells
 #define MERKLE_TREE_DFS_PIPELINE
-
-// Enable parallel DFS UT pipeline for faster usage tree building
-#define MERKLE_TREE_DFS_UT_PIPELINE
 
 // =====================================================================================================================
 #ifdef OPTIMIZE_FOR_CPU_TIME
@@ -59,4 +62,10 @@
 #ifdef CVQ_CHECK_TX_PARALLEL
 // CUT mutex required if transactions are executed in parallel - different accounts may share same cells / CUTs
 #define CELL_USAGE_TREE_MUTEX
+// Surprisingly enough, in fact, Merkle Tree parallel pipelines do NOT require CUT Mutex
+#endif
+
+#ifdef OPTIMIZE_FOR_PROFILING
+#define BOC_DS_BP_USE_ACTORS
+#define CVQ_CHECK_TX_WITH_ACTORS
 #endif

@@ -177,8 +177,8 @@ class ContestGrader : public td::actor::Actor {
       printf("%*lu  %-*s %8.5f %8.5f  OK     block is INVALID\n", (int)test_idx_column_width_, test_idx_ + 1,
              (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time);
 #else
-      printf("%*lu  %-*s %8.5f %8.5f  OK     block is INVALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
-             (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2);
+      printf("%*lu  %-*s %8.5f %8.5f  OK     block is INVALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
+             (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2, m::d3, m::d4);
 #endif
       fflush(stdout);
       ++cnt_ok_;
@@ -207,14 +207,14 @@ class ContestGrader : public td::actor::Actor {
     printf("%*lu  %-*s %8.5f %8.5f  OK     block is VALID\n", (int)test_idx_column_width_, test_idx_ + 1,
            (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time);
 #else
-    printf("%*lu  %-*s %8.5f %8.5f  OK     block is VALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
-           (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2);
+    printf("%*lu  %-*s %8.5f %8.5f  OK     block is VALID | %-9lu %-9lu %-9lu %-9.5f %-9.5f %-9.5f %-9.5f\n", (int)test_idx_column_width_, test_idx_ + 1,
+           (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time, m::u1, m::u2, m::u3, m::d1, m::d2, m::d3, m::d4);
 #endif
     fflush(stdout);
 #ifdef METRICS_ENABLE
 #ifdef METRICS_PER_ITERATION
     m::u1 = m::u2 = m::u3 = 0;
-    m::d1 = m::d2 = 0;
+    m::d1 = m::d2 = m::d3 = m::d4 = 0;
     m::a1 = m::a2 = m::a3 = 0;
 #endif
 #endif

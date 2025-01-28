@@ -483,6 +483,7 @@ td::Result<WorkchainSet> Config::unpack_workchain_list(Ref<vm::Cell> root) {
   return std::move(pair.first);
 }
 
+// sd: This function is important for performance. It is called in many different places, for many blocks.
 td::Result<std::unique_ptr<ValidatorSet>> Config::unpack_validator_set(Ref<vm::Cell> vset_root) {
   if (vset_root.is_null()) {
     return td::Status::Error("validator set is absent");
@@ -506,13 +507,21 @@ td::Result<std::unique_ptr<ValidatorSet>> Config::unpack_validator_set(Ref<vm::C
     return td::Status::Error("validator set cannot have zero total weight");
   }
   vm::Dictionary dict{std::move(dict_root), 16};
+
+  // This check also can be skipped, because dict.check_for_each along with if (i != rec.total) check WILL
+  // make sure that keys are from 0 to rec.total - 1 (on each for_each step, running i is checked against key).
+  // Since total is uint16, and ValidatorSet size is 48, worst case allocation is 3,145,680 bytes, which is safe.
+  /*
   td::BitArray<16> key_buffer;
   auto last = dict.get_minmax_key(key_buffer.bits(), 16, true);
   if (last.is_null() || (int)key_buffer.to_ulong() != rec.total - 1) {
     return td::Status::Error(
         "maximal index in a validator set dictionary must be one less than the total number of validators");
   }
+  */
+
   auto ptr = std::make_unique<ValidatorSet>(rec.utime_since, rec.utime_until, rec.total, rec.main);
+  ptr->list.reserve(rec.total);
   int i = 0;
   td::Slice error = "";
   // sd: Walking through dictionary is MUCH faster than performing lots of lookups!

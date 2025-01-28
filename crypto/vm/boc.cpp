@@ -1049,6 +1049,9 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
   // I thought of another approach that should be more close to the original and should be more efficient than that stuff
   // ===================================================================================================================
   auto cell_should_cache_ptr = info.has_cache_bits ? &cell_should_cache : nullptr;
+#if METRICS_MEASURE == MM_BOC_TIMER
+  td::Timer timer;
+#endif
   // auto cell_cache_mutexes_ptr = info.has_cache_bits ? &cell_cache_mutexes : nullptr;
 #ifdef BOC_DS_BLAST_PROCESSING
   // Optimistic - pessimistic approach to cell deserialization
@@ -1282,6 +1285,9 @@ td::Result<long long> BagOfCells::deserialize(const td::Slice& data, int max_roo
     cell_list.push_back(r_cell.move_as_ok());
     DCHECK(cell_list.back().not_null());
   }
+#endif
+#if METRICS_MEASURE == MM_BOC_TIMER
+  m::d1 += timer.elapsed();
 #endif
   // sd: At this point all cells must be deserialized and put into cell ~~list~~ vector properly...
   // ===================================================================================================================

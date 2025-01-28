@@ -6,6 +6,8 @@ namespace m {
   uint64_t u3{0};
   double d1{0.0};
   double d2{0.0};
+  double d3{0.0};
+  double d4{0.0};
   std::atomic_uint64_t a1{0};
   std::atomic_uint64_t a2{0};
   std::atomic_uint64_t a3{0};
@@ -16,7 +18,9 @@ namespace m {
       u2 = a2.load();
       u3 = a3.load();
     }
-    d1 = static_cast<double>(u2) / static_cast<double>(u1);
-    d2 = static_cast<double>(u3) / static_cast<double>(u1);
+    if (u1 != 0) {
+      d1 = static_cast<double>(u2) / static_cast<double>(u1);
+      d2 = static_cast<double>(u3) / static_cast<double>(u1);
+    }
   }
 }

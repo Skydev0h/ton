@@ -228,9 +228,11 @@ bool ContestValidateQuery::fatal_error(std::string err_msg, int err_code) {
  * Finishes the query and sends the result to the promise.
  */
 void ContestValidateQuery::finish_query() {
+  /*
   if (thread_id() != my_thread_id_) {
     fprintf(stderr, "finish_query() called from wrong thread\n");
   }
+  */
   if (main_promise) {
     LOG(WARNING) << "validate query done";
     main_promise.set_result(std::move(result_state_update_));
@@ -4437,7 +4439,6 @@ bool ContestValidateQuery::check_in_queue() {
   if (imported_messages_count == 0 && claimed_proc_lt_ == 0) {
     return true;
   }
-
   std::vector<block::OutputQueueMerger::Neighbor> neighbor_queues;
   for (const auto& descr : neighbors_) {
     td::BitArray<96> key;

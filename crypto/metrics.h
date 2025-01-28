@@ -6,8 +6,10 @@
 #define MM_BOC_HASH_REF 2
 #define MM_BOC_SIZE_SPEC 3
 #define MM_BOC_BLAST_MT 4
+#define MM_MERKLE_GEN 5
+#define MM_BOC_TIMER 6
 
-// #define METRICS_MEASURE MM_BOC_BLAST_MT
+// #define METRICS_MEASURE MM_MERKLE_GEN
 
 // #define METRICS_PER_ITERATION
 
@@ -17,6 +19,8 @@ namespace m {
   extern uint64_t u3;
   extern double d1; // = u2 / u1
   extern double d2; // = u3 / u1
+  extern double d3;
+  extern double d4;
   extern std::atomic_uint64_t a1;
   extern std::atomic_uint64_t a2;
   extern std::atomic_uint64_t a3;
