@@ -86,6 +86,14 @@ set(TON_CRYPTO_CORE_SOURCE
   vm/cells/VirtualCell.h
   vm/cells/VirtualizationParameters.h
 
+  vm/xalloc/Allocator.cpp
+  vm/xalloc/Allocator.h
+  vm/xalloc/DataTypes.h
+  vm/xalloc/Fault.cpp
+  vm/xalloc/Fault.h
+  vm/xalloc/xallocator.cpp
+  vm/xalloc/xallocator.h
+
   vm/cells.h
   vm/cellslice.h
 

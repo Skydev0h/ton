@@ -30,6 +30,7 @@
 #include "td/utils/Time.h"
 #include "td/utils/Timer.h"
 #include "td/utils/port/FileFd.h"
+#include "xalloc/xallocator.h"
 
 #include <queue>
 #include <tr1/tuple>
@@ -210,7 +211,10 @@ struct CellSerializationInfo {
 };
 
 struct DeferredCellData {
-  int idx;
+  XALLOCATOR // TODO: Temp - use xallocator, ideally use specifically crafted temp arena
+  // FIXME if will have time after working with Task#2 ...
+
+  int idx{0};
   CellSerializationInfo info;
   td::Slice slice;
 
