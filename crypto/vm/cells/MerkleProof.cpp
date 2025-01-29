@@ -80,7 +80,7 @@ class MerkleProofImpl {
   uint32_t created_pruned{0};
 #endif
 
-  // TODO:
+  // TODO: optimize after task 2 if have time
   // 1. Pipeline for dfs_usage_tree
   // 2. Pipeline for dfs
   //    Construct later, keep index, !!! EVALUATE REFS !!!

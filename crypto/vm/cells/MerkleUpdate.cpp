@@ -203,6 +203,7 @@ Ref<Cell> MerkleUpdate::apply_raw(Ref<Cell> from, Ref<Cell> update_from, Ref<Cel
   return detail::MerkleUpdateApply().apply(from, std::move(update_from), std::move(update_to), from_level, to_level);
 }
 
+// TODO: optimize after task 2 if have time
 std::pair<Ref<Cell>, Ref<Cell>> MerkleUpdate::generate_raw(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree) {
   // create Merkle update cell->new_cell
   auto update_to = MerkleProof::generate_raw(to, [tree = usage_tree](const Ref<Cell> &cell) {
