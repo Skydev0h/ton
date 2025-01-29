@@ -213,6 +213,32 @@ struct DeferredCellData {
   int idx;
   CellSerializationInfo info;
   td::Slice slice;
+
+  // Default constructor
+  DeferredCellData() = default;
+
+  // Move constructor
+  DeferredCellData(DeferredCellData&& other) noexcept
+      : idx(other.idx), info(other.info), slice(other.slice) {
+  }
+  
+  DeferredCellData(int index, CellSerializationInfo&& info, td::Slice&& slice)
+      : idx(index), info(info), slice(slice) {}
+
+  // Move assignment operator
+  DeferredCellData& operator=(DeferredCellData&& other) noexcept {
+    if (this != &other) {
+      idx = other.idx;
+      info = other.info;
+      slice = other.slice;
+    }
+    return *this;
+  }
+
+  // Disable copy to encourage moving
+  DeferredCellData(const DeferredCellData&) = delete;
+  DeferredCellData& operator=(const DeferredCellData&) = delete;
+
 };
 
 class BagOfCellsLogger {
