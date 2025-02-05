@@ -17,6 +17,8 @@
     Copyright 2017-2020 Telegram Systems LLP
 */
 #include "vm/cells/MerkleProof.h"
+
+#include "metrics.h"
 #include "vm/cells/CellBuilder.h"
 #include "vm/cells/CellSlice.h"
 #include "vm/boc.h"
@@ -36,11 +38,28 @@ class MerkleProofImpl {
   Ref<Cell> create_from(Ref<Cell> cell) {
     if (!is_prunned_) {
       CHECK(usage_tree_);
+#if METRICS_MEASURE == MM_MERKLE_GEN
+      td::Timer timer;
+#endif
       dfs_usage_tree(cell, usage_tree_->root_id());
+#if METRICS_MEASURE == MM_MERKLE_GEN
+      m::d3 += timer.elapsed(); // 0.02169 / 0.04487 (with usual prefetch_ref) / 0.051711 (without CUT opts) / 2.71614
+      m::a1 += visited_count;
+#endif
       is_prunned_ = [this](const Ref<Cell> &cell) { return visited_cells_.count(cell->get_hash()) == 0; };
     }
     try {
+      cells_.reserve(visited_cells_.size() * 42 / 10); // metrics show on average 4.2x of visited cells to be created
+#if METRICS_MEASURE == MM_MERKLE_GEN
+      td::Timer timer;
+      auto res = dfs(cell, cell->get_level());;
+      m::d4 += timer.elapsed(); // 0.21784 / 2.71614 - ~8% <- maybe worth paralleling
+      m::a2 += created_cells;
+      m::a3 += created_pruned;
+      return res;
+#else
       return dfs(cell, cell->get_level());
+#endif
     } catch (CellBuilder::CellWriteError &) {
       return {};
     } catch (CellBuilder::CellCreateError &) {
@@ -55,14 +74,40 @@ class MerkleProofImpl {
   CellUsageTree *usage_tree_{nullptr};
   MerkleProof::IsPrunnedFunction is_prunned_;
 
+#if METRICS_MEASURE == MM_MERKLE_GEN
+  uint32_t visited_count{0};
+  uint32_t created_cells{0};
+  uint32_t created_pruned{0};
+#endif
+
+  // TODO: optimize after task 2 if have time
+  // 1. Pipeline for dfs_usage_tree
+  // 2. Pipeline for dfs
+  //    Construct later, keep index, !!! EVALUATE REFS !!!
+  // 3. Multiple visited_cells_ HashSets by hash for less locking
+  // 4. Synchronization primitives for visited_cells_
+
+  // sd: At this point usage_tree_ would not be updated. Therefore, we can avoid locks and extra calls on prefetch.
+  // IRONICALLY ENOUGH, it seems that parallelizing MerkleProof generation DOES NOT require thread-safe CellUsageTree
+  // On the contrary, in dfs_usage_tree the tree is only READ (prefetch_ref without updating UsageCell/Tree still
+  // results in the valid MerkleProof, and that's completely logical, only loaded cells are iterated), both for
+  // is_loaded and get_child calls. Despite this, thread-safe CUT is required for parallel account processing, since,
+  // when reading a master block, duplicate cells are created from BoC as singular instances, thus traversing same cells,
+  // even in different accounts, results in access to same instances of Cell / CellUsageTree / UsageNode.
+
+  // Metrics: 198240 459256 371916 optimized CUT, 198240 459256 371916 unoptimized <-- correctness --> ++
+
   void dfs_usage_tree(Ref<Cell> cell, CellUsageTree::NodeId node_id) {
-    if (!usage_tree_->is_loaded(node_id)) {
+    if (!usage_tree_->is_loaded_no_lock(node_id)) {
       return;
     }
     visited_cells_.insert(cell->get_hash());
+#if METRICS_MEASURE == MM_MERKLE_GEN
+    visited_count++;
+#endif
     CellSlice cs(NoVm(), cell);
     for (unsigned i = 0; i < cs.size_refs(); i++) {
-      dfs_usage_tree(cs.prefetch_ref(i), usage_tree_->get_child(node_id, i));
+      dfs_usage_tree(cs.prefetch_ref_no_usage_tree(i), usage_tree_->get_child_no_lock(node_id, i));
     }
   }
 
@@ -81,6 +126,9 @@ class MerkleProofImpl {
       auto res = CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
       CHECK(res.not_null());
       cells_.emplace(key, res);
+#if METRICS_MEASURE == MM_MERKLE_GEN
+      created_pruned++;
+#endif
       return res;
     }
     CellSlice cs(NoVm(), cell);
@@ -88,11 +136,15 @@ class MerkleProofImpl {
     CellBuilder cb;
     cb.store_bits(cs.fetch_bits(cs.size()));
     for (unsigned i = 0; i < cs.size_refs(); i++) {
-      cb.store_ref(dfs(cs.prefetch_ref(i), children_merkle_depth));
+      // sd: We have already constructed visited_cells_ from our usage tree and can omit UsageCell::create stuff
+      cb.store_ref(dfs(cs.prefetch_ref_no_usage_tree(i), children_merkle_depth));
     }
     auto res = cb.finalize(cs.is_special());
     CHECK(res.not_null());
     cells_.emplace(key, res);
+#if METRICS_MEASURE == MM_MERKLE_GEN
+    created_cells++;
+#endif
     return res;
   }
 };

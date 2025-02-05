@@ -238,7 +238,7 @@ struct CellInfoHashTableDense {
   std::vector<CellInfo> dense_ht_values_;
   td::HashSet<CellInfo, CellHashF, CellEqF> new_ht_;
   size_t dense_choose_bucket(const CellHash &hash) const {
-    return cell_hash_slice_hash(hash.as_slice()) % dense_ht_buckets_;
+    return cell_hash_direct(hash) % dense_ht_buckets_;
   }
   const CellInfo *dense_find(CellHash hash) const {
     auto bucket_i = dense_choose_bucket(hash);

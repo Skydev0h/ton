@@ -141,7 +141,7 @@ td::Result<tl_object_ptr<ton_api::tonNode_outMsgQueueProof>> OutMsgQueueProof::b
   vm::Dictionary states_dict{mpb.root(), 32};
   std::vector<std::pair<BlockIdExt, block::gen::OutMsgQueueInfo::Record>> data(blocks.size());
   for (size_t i = 0; i < blocks.size(); ++i) {
-    data[i].first = blocks[i].id;
+    data[i].first = blocks[i].id; // v v v - A significant optimization MAY be possible here, but this part is out of scope ~sd
     TRY_RESULT(state, ShardStateQ::fetch(blocks[i].id, {}, states_dict.lookup_ref(td::BitArray<32>{(long long)i})));
     TRY_RESULT(outq_descr, state->message_queue());
     block::gen::OutMsgQueueInfo::Record qinfo;

@@ -61,6 +61,12 @@ struct CellHash {
   const std::array<td::uint8, CellTraits::hash_bytes>& as_array() const {
     return hash_;
   }
+  const unsigned char* as_c_byte_ptr() const {
+    return hash_.data();
+  }
+  unsigned char* as_byte_ptr() {
+    return hash_.data();
+  }
 
   static CellHash from_slice(td::Slice slice) {
     CellHash res;
@@ -76,15 +82,32 @@ struct CellHash {
 
 inline size_t cell_hash_slice_hash(td::Slice hash) {
   // use offset 8, because in db keys are grouped by first bytes.
-  return td::as<size_t>(hash.substr(8, 8).ubegin());
+  // return td::as<size_t>(hash.substr(8, 8).ubegin());
+  // sd: do not create another Slice for substr
+  return td::as<size_t>(hash.ubegin() + 8);
 }
+
+// sd: Creating Slice, and then another Slice (substr) just to extract bits with offset
+// is a really terrible and very in-optimal idea. It is much better to extract bits directly.
+inline size_t cell_hash_direct(vm::CellHash hash) {
+  // return td::as<size_t>(hash.bits().get_byte_ptr() + 8);
+  return td::as<size_t>(hash.as_c_byte_ptr() + 8);
+}
+
+inline size_t cell_hash_direct_0(vm::CellHash hash) {
+  // do not add offset 8, can be suitable for a number of uses
+  return td::as<size_t>(hash.as_c_byte_ptr());
+}
+
+
 namespace std {
 template <>
 struct hash<vm::CellHash> {
   typedef vm::CellHash argument_type;
   typedef std::size_t result_type;
   result_type operator()(argument_type const& s) const noexcept {
-    return cell_hash_slice_hash(s.as_slice());
+    // sd: use optimized fn
+    return cell_hash_direct(s);
   }
 };
 }  // namespace std

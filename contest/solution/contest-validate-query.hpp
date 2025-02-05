@@ -93,6 +93,7 @@ class ContestValidateQuery : public td::actor::Actor {
  public:
   ContestValidateQuery(BlockIdExt block_id, td::BufferSlice block_data, td::BufferSlice collated_data,
                        td::Promise<td::BufferSlice> promise);
+  void post_thread_join();
 
  private:
   int verbosity{0};
@@ -177,6 +178,18 @@ class ContestValidateQuery : public td::actor::Actor {
   bool processed_upto_updated_{false};
   std::unique_ptr<vm::AugmentedDictionary> sibling_out_msg_queue_;
   std::shared_ptr<block::MsgProcessedUptoCollection> sibling_processed_upto_;
+
+  std::mutex acc_mtx_;
+  std::mutex mpl_mtx_;
+  std::mutex aedam_mtx_;
+  std::mutex bls_mtx_;
+  std::mutex tb_mtx_;
+  uint64_t my_thread_id_{0};
+
+  int post_join_action_ = 0;
+  std::string post_join_string_ = "";
+  td::BufferSlice post_join_buffer_slice_{};
+  td::Status post_join_status_{td::Status::OK()};
 
   std::map<td::Bits256, int> block_create_count_;
   unsigned block_create_total_{0};

@@ -5,6 +5,9 @@ if (NOT OPENSSL_FOUND)
 endif()
 
 set(TON_CRYPTO_CORE_SOURCE
+  metrics.h
+  metrics.cpp
+
   Ed25519.cpp
   common/bigint.cpp
   common/refcnt.cpp
@@ -82,6 +85,14 @@ set(TON_CRYPTO_CORE_SOURCE
   vm/cells/UsageCell.h
   vm/cells/VirtualCell.h
   vm/cells/VirtualizationParameters.h
+
+  vm/xalloc/Allocator.cpp
+  vm/xalloc/Allocator.h
+  vm/xalloc/DataTypes.h
+  vm/xalloc/Fault.cpp
+  vm/xalloc/Fault.h
+  vm/xalloc/xallocator.cpp
+  vm/xalloc/xallocator.h
 
   vm/cells.h
   vm/cellslice.h

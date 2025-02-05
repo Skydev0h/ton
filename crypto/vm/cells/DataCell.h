@@ -30,6 +30,14 @@ class DataCell : public Cell {
   // NB: cells created with use_arena=true are never freed
   static thread_local bool use_arena;
 
+  // Must be switched outside of active operations
+  static bool use_temp_arena;
+  // NB: For proper instancing it may be necessary to pass a call chain
+  // from the function requiring DataCell batch (such as BOC deserialization)
+  // but for the contest injecting static bool should suffice
+
+  static void reset_temp_arena(bool hard = false);
+
   DataCell(const DataCell& other) = delete;
   ~DataCell() override;
 

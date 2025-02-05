@@ -24,6 +24,10 @@
 
 #include "td/utils/Slice.h"
 
+#include <openssl/sha.h>
+
+#include "contest/solution/sol-controls.h"
+
 namespace digest {
 struct OpensslEVP_SHA1 {
   enum { digest_bytes = 20 };
@@ -122,6 +126,53 @@ std::string HashCtx<H>::extract() {
   assert(olen == digest_bytes);
   return std::string((char *)buffer, olen);
 }
+
+#ifdef OPENSSL_FAST_SHA256
+// sd: N.B.! While being deprecated, these functions are MUCH faster than EV ones!
+// see https://github.com/openssl/openssl/issues/19612
+// If performance is *really* needed, then it is better to use them, and profiling
+// shows that constructing cells, and especially, hashing takes A LOT of computing time!
+
+// N.B.2: There are only low-level functions for SHA1, SHA224 and SHA256,
+// and it seems that only SHA256 is extensively used in the code
+
+template<>
+class HashCtx<OpensslEVP_SHA256> {
+  SHA256_CTX ctx;
+
+public:
+  enum { digest_bytes = 32 };
+  HashCtx() {
+    SHA256_Init(&ctx);
+  }
+  HashCtx(const void *data, std::size_t len) {
+    SHA256_Init(&ctx);
+    feed(data, len);
+  }
+  ~HashCtx() = default;
+  void reset() {
+    SHA256_Init(&ctx);
+  }
+  void feed(const void *data, std::size_t len) {
+    SHA256_Update(&ctx, data, len);
+  }
+  void feed(td::Slice slice) {
+    feed(slice.data(), slice.size());
+  }
+  std::size_t extract(unsigned char buffer[digest_bytes]) {
+    SHA256_Final(buffer, &ctx);
+    return digest_bytes;
+  }
+  std::size_t extract(td::MutableSlice slice) {
+    return extract(slice.ubegin());
+  }
+  std::string extract() {
+    unsigned char buffer[digest_bytes];
+    extract(buffer);
+    return std::string((char *)buffer, digest_bytes);
+  }
+};
+#endif
 
 typedef HashCtx<OpensslEVP_SHA1> SHA1;
 typedef HashCtx<OpensslEVP_SHA256> SHA256;

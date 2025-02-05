@@ -91,6 +91,27 @@ class MerkleUpdateApply {
   }
 };
 
+using MUVKey = std::pair<Cell::Hash, int>;
+
+struct MUVKeyEqF {
+  using is_transparent = void;  // Pred to use
+  template <class A, class B>
+  bool operator()(const A& a, const B& b) const {
+    return (a.first == b.first) && (a.second == b.second);
+  }
+};
+
+struct MUVKeyHashF {
+  using is_transparent = void;  // Pred to use
+  using transparent_key_equal = CellHashEqF;
+  template <class T>
+  size_t operator()(const T& value) const {
+    return cell_hash_direct(value.first);
+  }
+};
+
+using MUVKeyHashSet = td::HashSet<MUVKey, MUVKeyHashF, MUVKeyEqF>;
+
 class MerkleUpdateValidator {
  public:
   td::Status validate(Ref<Cell> update_from, Ref<Cell> update_to, td::uint32 from_level, td::uint32 to_level) {
@@ -99,10 +120,11 @@ class MerkleUpdateValidator {
   }
 
  private:
-  td::HashSet<Cell::Hash> known_cells_;
-  using Key = std::pair<Cell::Hash, int>;
-  td::HashSet<Key> visited_from_;
-  td::HashSet<Key> visited_to_;
+  // td::HashSet<Cell::Hash> known_cells_;
+  CellHashHashSet known_cells_;
+
+  MUVKeyHashSet visited_from_;
+  MUVKeyHashSet visited_to_;
 
   void dfs_from(Ref<Cell> cell, int merkle_depth) {
     if (!visited_from_.emplace(cell->get_hash(), merkle_depth).second) {
@@ -181,6 +203,7 @@ Ref<Cell> MerkleUpdate::apply_raw(Ref<Cell> from, Ref<Cell> update_from, Ref<Cel
   return detail::MerkleUpdateApply().apply(from, std::move(update_from), std::move(update_to), from_level, to_level);
 }
 
+// TODO: optimize after task 2 if have time
 std::pair<Ref<Cell>, Ref<Cell>> MerkleUpdate::generate_raw(Ref<Cell> from, Ref<Cell> to, CellUsageTree *usage_tree) {
   // create Merkle update cell->new_cell
   auto update_to = MerkleProof::generate_raw(to, [tree = usage_tree](const Ref<Cell> &cell) {

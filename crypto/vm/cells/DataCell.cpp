@@ -18,14 +18,19 @@
 */
 #include "vm/cells/DataCell.h"
 
+#include "metrics.h"
 #include "openssl/digest.hpp"
 
 #include "td/utils/ScopeGuard.h"
 
 #include "vm/cells/CellWithStorage.h"
 
+#include <thread>
+#include "contest/solution/sol-controls.h"
+
 namespace vm {
 thread_local bool DataCell::use_arena = false;
+bool DataCell::use_temp_arena = false;
 
 namespace {
 template <class CellT>
@@ -53,7 +58,107 @@ private:
     return res;
   }
 };
+
+#ifdef CELL_DATA_TEMP_ARENA
+// Can be used to allocate temporary arena which combines best of two worlds:
+//     fast allocation AND being able to delete the data later from memory (or reuse allocated memory slabs)
+// General logic is - Enable and Reset TempArena - Create and use cells - Disable TempArena
+// WARNING! Extra care MUST be taken when using this allocator!
+// It is the best suitable for processing data batches, like in contest, where cells have specific isolated lifespan
+// Practically, it can be used for faster synchronization, if the cells lifespan is determinedly framed
+// VERY bad stuff will happen if arena is reset when Cells still linger and can be used in the future.
+// In case of soft reset data corruption would occur, in case of hard reset the program will crash with SIGSEGV
+// In theory it is possible to create a scoped arena that would have lifespan bound to the object which cells are used for
+struct TemporaryArenaAllocator {
+
+  template <class T, class... ArgsT>
+  std::unique_ptr<DataCell> make_unique(ArgsT&&... args) {
+    auto* ptr = fast_alloc(sizeof(T));
+    T* obj = new (ptr) T(std::forward<ArgsT>(args)...);
+    return std::unique_ptr<T>(obj);
+  }
+
+  static void reset(bool hard) {
+    std::lock_guard lock(mutex);
+    generation++;
+    if (hard) {
+      for (auto* ptr : allocated_pool) {
+        // fprintf(stdout, "[T%lx] delete_batch: start=%p, end=%p, size: %lx\n",
+        //   std::hash<std::thread::id>{}(std::this_thread::get_id()), ptr, ptr + batch_size, batch_size);
+        // memset(ptr, 0, batch_size); // most likely not needed, it is not secret information, really
+        delete[] ptr;
+      }
+      allocated_pool.clear();
+      available = allocated_pool.end();
+    } else {
+      available = allocated_pool.begin(); // soft reset
+      // fprintf(stdout, "[T%lx] soft reset: count=%lu, generation=%lu\n",
+      //   std::hash<std::thread::id>{}(std::this_thread::get_id()), allocated.size(), generation);
+    }
+  }
+
+private:
+
+  static constexpr size_t batch_size = TEMP_ARENA_BATCH_SIZE;
+  static std::list<char*> allocated_pool; // soft reset does not delete pool, hard reset does, slabs can be reused
+  static std::list<char*>::iterator available;
+  static std::mutex mutex;
+  static uint64_t generation; // we cannot access thread_local variables directly
+
+  static td::MutableSlice alloc_batch() {
+    char* memory_slab = nullptr;
+    {
+      std::lock_guard lock(mutex);
+      if (available == allocated_pool.end()) {
+        auto batch = std::make_unique<char[]>(batch_size);
+        memory_slab = batch.release();
+        allocated_pool.push_back(memory_slab);
+        available = allocated_pool.end();
+        // fprintf(stdout, "[T%lx] alloc_batch: allocated start=%p, end=%p, size: %lx <<<<<<<<<<<<<<<<<<<<<<<<<<<\n",
+        //   std::hash<std::thread::id>{}(std::this_thread::get_id()), memory, memory + batch_size, batch_size);
+      } else {
+        memory_slab = *(available++);
+        // fprintf(stdout, "[T%lx] alloc_batch: reused start=%p, end=%p, size: %lx\n",
+        //   std::hash<std::thread::id>{}(std::this_thread::get_id()), memory, memory + batch_size, batch_size);
+      }
+    }
+    auto res = td::MutableSlice(memory_slab, batch_size);
+    return res;
+  }
+
+  static char* fast_alloc(size_t size) {
+    thread_local td::MutableSlice batch;
+    thread_local uint64_t my_generation = 0;
+    if (my_generation != generation) {
+      my_generation = generation;
+      batch = alloc_batch();
+    } else if (batch.size() < size) {
+      batch = alloc_batch();
+    }
+    auto res = batch.begin();
+    auto aligned_size = (size + 7) & -8; // Align to 8 bytes
+    batch.remove_prefix(aligned_size);
+    // fprintf(stdout, "[T%lx] fast_alloc: start=%p, end=%p, size: %lu (requested %lu)\n",
+    //   std::hash<std::thread::id>{}(std::this_thread::get_id()),
+    //   res, res + aligned_size, aligned_size, size);
+    return res;
+  }
+
+};
+
+std::list<char*> TemporaryArenaAllocator::allocated_pool{};
+std::mutex TemporaryArenaAllocator::mutex{};
+uint64_t TemporaryArenaAllocator::generation = 0;
+std::list<char*>::iterator TemporaryArenaAllocator::available = allocated_pool.end();
+#endif
 }
+
+void DataCell::reset_temp_arena(bool hard) {
+#ifdef CELL_DATA_TEMP_ARENA
+  TemporaryArenaAllocator::reset(hard);
+#endif
+}
+
 std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
   if (use_arena) {
     ArenaAllocator<DataCell> allocator;
@@ -62,6 +167,17 @@ std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
     Ref<DataCell>(res.get()).release();
     return res;
   }
+
+#ifdef CELL_DATA_TEMP_ARENA
+  if (use_temp_arena)
+  {
+    TemporaryArenaAllocator allocator;
+    auto res = detail::CellWithArrayStorage<DataCell>::create(allocator, info.get_storage_size(), info);
+    // this is dangerous
+    Ref<DataCell>(res.get()).release();
+    return res;
+  }
+#endif
 
   return detail::CellWithUniquePtrStorage<DataCell>::create(info.get_storage_size(), info);
 }
@@ -92,7 +208,8 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
 
 DataCell::SpecialType DataCell::special_type() const {
   if (is_special()) {
-    return static_cast<SpecialType>(td::bitstring::bits_load_ulong(get_data(), 8));
+    // return static_cast<SpecialType>(td::bitstring::bits_load_ulong(get_data(), 8));
+    return static_cast<SpecialType>(*get_data()); // syntax sugar is good, but direct access is faster
   }
   return SpecialType::Ordinary;
 }
@@ -264,22 +381,26 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
     if (hash_i < hash_i_offset) {
       continue;
     }
-    unsigned char tmp[2];
+
+    // sd: Sending data to the hasher in one packet is much more efficient
+    // Along with SHA256 hash optimization slices off 27.1% samples off DataCell::create in profiler
+    alignas(32) static TD_THREAD_LOCAL unsigned char tmp[270];
+    // N.B. without TD_THREAD_LOCAL there were some VERY strange bugs and UB on my computer
+    // Added alignas(32) for extra safety...
+    unsigned char* end = tmp + 2;
     tmp[0] = info.d1(level_mask.apply(level_i));
     tmp[1] = info.d2();
 
-    static TD_THREAD_LOCAL digest::SHA256* hasher;
-    td::init_thread_local<digest::SHA256>(hasher);
-    hasher->reset();
-
-    hasher->feed(td::Slice(tmp, 2));
+#define append(data, length) \
+  std::memcpy(end, data, length); \
+  end += length;
 
     if (hash_i == hash_i_offset) {
       DCHECK(level_i == 0 || type == SpecialType::PrunnedBranch);
-      hasher->feed(td::Slice(data_ptr, (bits + 7) >> 3));
+      append(data_ptr, (bits + 7) >> 3);
     } else {
       DCHECK(level_i != 0 && type != SpecialType::PrunnedBranch);
-      hasher->feed(hashes_ptr[hash_i - hash_i_offset - 1].as_slice());
+      append(hashes_ptr[hash_i - hash_i_offset - 1].as_c_byte_ptr(), hash_bytes);
     }
 
     auto dest_i = hash_i - hash_i_offset;
@@ -288,16 +409,13 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
     td::uint16 depth = 0;
     for (int i = 0; i < info.refs_count_; i++) {
       td::uint16 child_depth = 0;
-      if (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate) {
-        child_depth = refs_ptr[i]->get_depth(level_i + 1);
-      } else {
-        child_depth = refs_ptr[i]->get_depth(level_i);
-      }
+      int deeper = (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate);
+      child_depth = refs_ptr[i]->get_depth(level_i + deeper);
 
       // add depth into hash
       td::uint8 child_depth_buf[depth_bytes];
       store_depth(child_depth_buf, child_depth);
-      hasher->feed(td::Slice(child_depth_buf, depth_bytes));
+      append(child_depth_buf, depth_bytes);
 
       depth = std::max(depth, child_depth);
     }
@@ -311,15 +429,44 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
 
     // children hash
     for (int i = 0; i < info.refs_count_; i++) {
-      if (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate) {
-        hasher->feed(refs_ptr[i]->get_hash(level_i + 1).as_slice());
-      } else {
-        hasher->feed(refs_ptr[i]->get_hash(level_i).as_slice());
-      }
+      int deeper = (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate);
+      append(refs_ptr[i]->get_hash(level_i + deeper).as_c_byte_ptr(), hash_bytes); // 32
     }
+
+    // the length of data to be hashed is <= 266, let's allocate 270 bytes for safety
+
+#undef append
+
+#ifdef DATA_CELL_DIRECT_SHA256
+    static TD_THREAD_LOCAL digest::SHA256* hasher;
+    td::init_thread_local<digest::SHA256>(hasher);
+    hasher->reset();
+    hasher->feed(tmp, end - tmp);
+    const auto extracted_size = hasher->extract(hashes_ptr[dest_i].as_slice());
+    DCHECK(extracted_size == hash_bytes);
+#else
+    static TD_THREAD_LOCAL digest::SHA256* hasher;
+    td::init_thread_local<digest::SHA256>(hasher);
+    hasher->reset();
+    hasher->feed(tmp, end - tmp);
     auto extracted_size = hasher->extract(hashes_ptr[dest_i].as_slice());
     DCHECK(extracted_size == hash_bytes);
+#endif
+
+#if METRICS_MEASURE == MM_CELL_HASH
+    m::u2 += 1;
+#endif
   }
+
+  // sd: N.B. During the test, there are 10,372,418 calculated hashes with 8,364,735 created cells
+  // Therefore, on average, there are 1.24 hashes calculated per cell on average
+  // Consequently, parallelizing hash calculation in this function would provide diminishing results
+  // Average cell level: 0.40728
+
+#if METRICS_MEASURE == MM_CELL_HASH
+  m::u1 += 1;
+  m::u3 += level_mask.get_level();
+#endif
 
   return Ref<DataCell>(data_cell.release(), Ref<DataCell>::acquire_t{});
 }
